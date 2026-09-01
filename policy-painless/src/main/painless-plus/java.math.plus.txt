@@ -1,0 +1,3 @@
+class java.math.BigDecimal {
+  BigDecimal divide(BigDecimal,RoundingMode)
+}

@@ -1,0 +1,18 @@
+class java.util.regex.MatchResult {
+  int start()
+  int end()
+  int start(int)
+  int end(int)
+  int groupCount()
+  String group()
+  String group(int)
+}
+
+class java.util.regex.Matcher {
+  MatchResult toMatchResult()
+}
+
+class java.util.regex.Pattern {
+  Pattern compile(String)
+  Pattern compile(String,int)
+}

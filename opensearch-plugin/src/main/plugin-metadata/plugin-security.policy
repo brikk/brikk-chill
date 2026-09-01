@@ -1,0 +1,8 @@
+// Only needed on nodes still running with the legacy Java SecurityManager enabled; the chill
+// sandbox itself is bytecode policy verification, not JSM. Scripts run with no extra privileges.
+grant {
+  permission java.lang.RuntimePermission "createClassLoader";
+  permission java.lang.RuntimePermission "getClassLoader";
+  permission java.lang.RuntimePermission "accessDeclaredMembers";
+  permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
+};

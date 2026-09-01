@@ -1,0 +1,47 @@
+name: Publish Snapshot
+
+# Every push to main builds and publishes the current -SNAPSHOT of all modules to the Central
+# Portal snapshots repo (keyless: snapshots are not signed). A broken build blocks the publish.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify version is a -SNAPSHOT
+        run: |
+          V=$(grep -E '^version=' gradle.properties | cut -d= -f2)
+          echo "Version: $V"
+          case "$V" in
+            *-SNAPSHOT) : ;;
+            *) echo "::error::Version '$V' is not a -SNAPSHOT; refusing to publish to the snapshots repo."; exit 1 ;;
+          esac
+
+      - name: Build and test
+        run: ./gradlew build --console=plain
+
+      - name: Publish snapshot to Central snapshots
+        env:
+          KOTLIN_TOOLCHAIN_MAVENCENTRAL_USERNAME: ${{ secrets.KOTLIN_TOOLCHAIN_MAVENCENTRAL_USERNAME || secrets.KOTLIN_TOOLCHAIN_MAVEN_CENTRAL_USERNAME }}
+          KOTLIN_TOOLCHAIN_MAVENCENTRAL_PASSWORD: ${{ secrets.KOTLIN_TOOLCHAIN_MAVENCENTRAL_PASSWORD || secrets.KOTLIN_TOOLCHAIN_MAVEN_CENTRAL_PASSWORD }}
+        run: ./gradlew publishAllPublicationsToCentralSnapshotsRepository --console=plain

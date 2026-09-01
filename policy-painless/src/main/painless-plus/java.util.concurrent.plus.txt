@@ -1,0 +1,13 @@
+class java.util.concurrent.ConcurrentMap {
+  def putIfAbsent(def,def)
+}
+
+class java.util.concurrent.atomic.AtomicReferenceFieldUpdater {
+  boolean compareAndSet(def,def,def)
+  AtomicReferenceFieldUpdater newUpdater(Class,Class,String)
+}
+
+class java.util.concurrent.atomic.AtomicReference {
+  (def)
+  def getAndSet(def)
+}

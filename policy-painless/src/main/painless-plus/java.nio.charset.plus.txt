@@ -1,0 +1,3 @@
+class java.nio.charset.Charset {
+  Charset forName(String)
+}

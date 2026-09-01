@@ -1,0 +1,12 @@
+class java.lang.annotation.Annotation {
+  Class annotationType()
+}
+
+class java.lang.annotation.Documented {
+}
+
+class java.lang.annotation.Retention {
+}
+
+class java.lang.annotation.Target {
+}

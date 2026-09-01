@@ -1,0 +1,84 @@
+class java.util.Arrays {
+  def copyOfRange(def,int,int)
+  int hashCode(def)
+  boolean equals(def,def)
+  def copyOf(def,int)
+  def copyOf(def,int,Class)
+  String toString(def)
+  void sort(def)
+  void sort(def,int,int)
+  void sort(def,Comparator)
+  void sort(def,int,int,Comparator)
+  void fill(def,int,int,def)
+  int binarySearch(def,int,int,def)
+  int binarySearch(def,int,int,def,Comparator)
+}
+
+class java.util.Collection {
+  boolean remove(def)
+}
+
+class java.util.LinkedHashMap {
+  (int)
+}
+
+class java.util.LinkedHashSet {
+  (int)
+}
+
+class java.util.ListIterator {
+  def previous()
+}
+
+class java.util.AbstractCollection {
+  ()
+}
+
+class java.util.AbstractList {
+  ()
+}
+
+class java.util.AbstractMap {
+  ()
+}
+
+class java.util.Properties {
+  ()
+  void putAll(Map)
+}
+
+class java.util.EnumSet {
+  EnumSet allOf(Class)
+}
+
+class java.util.HashSet {
+  (int)
+}
+
+class java.util.HashMap {
+  (int)
+}
+
+class java.util.TreeMap {
+  (Map)
+}
+
+class java.util.ArrayList {
+  (int)
+  void ensureCapacity(int)
+}
+
+# serializable JDK collection internals produced by everyday factory calls
+# (Collections.singleton*/Arrays.asList - what Kotlin's setOf/listOf/mapOf compile to);
+# pure data holders, needed so captured collections pass serialization name checks
+class java.util.Collections$SingletonSet {
+}
+
+class java.util.Collections$SingletonList {
+}
+
+class java.util.Collections$SingletonMap {
+}
+
+class java.util.Arrays$ArrayList {
+}

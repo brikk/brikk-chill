@@ -1,0 +1,135 @@
+#
+# Chill "plus" extensions to the Painless whitelist: commonly used, safe java.lang members that
+# Painless does not include. Modern Painless definition grammar.
+#
+
+class java.io.Serializable {
+}
+
+class java.lang.Boolean {
+  Class TYPE
+}
+
+class java.lang.Byte {
+  Class TYPE
+  byte byteValue()
+}
+
+class java.lang.Short {
+  Class TYPE
+  short shortValue()
+}
+
+class java.lang.Integer {
+  Class TYPE
+  int intValue()
+}
+
+class java.lang.Float {
+  Class TYPE
+  float floatValue()
+}
+
+class java.lang.Long {
+  Class TYPE
+  long longValue()
+}
+
+class java.lang.Double {
+  Class TYPE
+  double doubleValue()
+}
+
+class java.lang.Character {
+  Class TYPE
+  boolean isDefined(char)
+  boolean isLetter(char)
+  boolean isLetterOrDigit(char)
+  boolean isDigit(char)
+  boolean isIdentifierIgnorable(char)
+  boolean isISOControl(char)
+  boolean isJavaIdentifierPart(char)
+  boolean isJavaIdentifierStart(char)
+  boolean isWhitespace(char)
+  boolean isSpaceChar(char)
+  boolean isUpperCase(char)
+  boolean isLowerCase(char)
+  boolean isTitleCase(char)
+  int getType(char)
+  byte getDirectionality(char)
+  boolean isLowSurrogate(char)
+}
+
+class java.lang.String {
+  (def,int,int)
+  (def,int,int,def)
+  (def,def)
+  (def)
+  int indexOf(int,int)
+  int lastIndexOf(int,int)
+  String replace(char,char)
+  String intern()
+  boolean contentEquals(StringBuffer)
+  def getBytes(def)
+  Comparator CASE_INSENSITIVE_ORDER
+}
+
+class java.lang.Appendable {
+  Appendable append(def)
+}
+
+class java.lang.StringBuilder {
+  (int)
+}
+
+class java.lang.Throwable {
+  (String,Throwable)
+  (Throwable)
+  (String)
+  String getLocalizedMessage()
+  String getMessage()
+  StackTraceElement[] getStackTrace()
+}
+
+class java.lang.Exception {
+  (String,Throwable)
+  (Throwable)
+}
+
+class java.lang.Error {
+}
+
+class java.lang.AssertionError {
+  (def)
+}
+
+class java.lang.Enum {
+  (String,int)
+  Enum valueOf(Class,String)
+}
+
+class java.lang.Class {
+  boolean isInstance(def)
+  boolean desiredAssertionStatus()
+  Class getComponentType()
+  String getName()
+  boolean isPrimitive()
+  boolean isAssignableFrom(Class)
+}
+
+class java.lang.Object {
+  ()
+  Class getClass()
+}
+
+class java.lang.Math {
+  int max(int,int)
+  float max(float,float)
+  long max(long,long)
+  int min(int,int)
+  float min(float,float)
+  long min(long,long)
+}
+
+class java.lang.Deprecated {
+}

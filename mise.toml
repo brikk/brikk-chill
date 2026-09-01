@@ -1,0 +1,6 @@
+# Local build toolchain for brikk-chill.
+#   mise install    # fetch the pinned tools
+# JDK 21 is the compile target (matches OpenSearch 3.x minimum); any 21+ works.
+[tools]
+java = "21"
+kotlin = { version = "2.4.10", asset_pattern = "kotlin-compiler-*.zip", bin_path = "kotlinc/bin" }

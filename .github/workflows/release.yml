@@ -1,0 +1,98 @@
+name: Release to Maven Central
+
+# Push a branch named release/<version> (e.g. release/0.1.0) to publish that exact version of
+# all modules to Maven Central. A manual run (workflow_dispatch) with an explicit version input
+# is also supported.
+#
+# The deployment bundle is uploaded to the Central Portal with publishingType=AUTOMATIC:
+# Central validates and publishes it server-side with NO manual UI step, and this workflow does
+# NOT wait for validation/publication to finish - it ends as soon as the upload is accepted and
+# prints the deployment id/URL for checking later.
+
+on:
+  push:
+    branches: [ 'release/**' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0)'
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#release/}"
+          fi
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            echo "::error::Could not derive a version from ref '$GITHUB_REF_NAME'. Use a branch named release/<version> or the workflow_dispatch input."
+            exit 1
+          fi
+          case "$VERSION" in
+            *-SNAPSHOT) echo "::error::Release version must not be a SNAPSHOT ($VERSION)."; exit 1 ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION"
+
+      - name: Build, test, and stage signed publications
+        env:
+          KOTLIN_TOOLCHAIN_SIGNING_KEY: ${{ secrets.KOTLIN_TOOLCHAIN_SIGNING_KEY }}
+          KOTLIN_TOOLCHAIN_SIGNING_PASSPHRASE: ${{ secrets.KOTLIN_TOOLCHAIN_SIGNING_PASSPHRASE }}
+          KOTLIN_TOOLCHAIN_SIGNING_KEY_PASSPHRASE: ${{ secrets.KOTLIN_TOOLCHAIN_SIGNING_PASSPHRASE }}
+        run: |
+          ./gradlew -Pversion="${{ steps.ver.outputs.version }}" build publishAllPublicationsToStagingRepository --console=plain
+
+      - name: Upload deployment bundle to Central Portal (AUTOMATIC, no wait)
+        env:
+          CENTRAL_USERNAME: ${{ secrets.KOTLIN_TOOLCHAIN_MAVENCENTRAL_USERNAME || secrets.KOTLIN_TOOLCHAIN_MAVEN_CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.KOTLIN_TOOLCHAIN_MAVENCENTRAL_PASSWORD || secrets.KOTLIN_TOOLCHAIN_MAVEN_CENTRAL_PASSWORD }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          cd build/staging-repo
+
+          # the Portal bundle is a zip of the maven repository layout (Gradle already wrote
+          # per-file checksums; signing wrote the .asc files); maven-metadata files are not
+          # part of a Portal bundle
+          find . -name 'maven-metadata.xml*' -delete
+          zip -qr "../brikk-chill-$VERSION-bundle.zip" .
+          cd ..
+
+          TOKEN=$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)
+          DEPLOYMENT_ID=$(curl -sf -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -F "bundle=@brikk-chill-$VERSION-bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC&name=brikk-chill-$VERSION")
+
+          echo "Deployment accepted: $DEPLOYMENT_ID"
+          echo "Central will validate and publish automatically; check status (if you care) at:"
+          echo "  https://central.sonatype.com/publishing/deployments"
+          {
+            echo "## Maven Central deployment"
+            echo ""
+            echo "- version: \`$VERSION\`"
+            echo "- deployment id: \`$DEPLOYMENT_ID\`"
+            echo "- mode: AUTOMATIC (publishes without manual action; not awaited by this job)"
+          } >> "$GITHUB_STEP_SUMMARY"
