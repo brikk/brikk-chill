@@ -1,6 +1,8 @@
 package dev.brikk.chill.gradle
 
+import dev.brikk.chill.policy.ChillPolicyLoader
 import dev.brikk.chill.quarantine.LambdaVerificationManifest
+import dev.brikk.chill.quarantine.LibraryPolicies
 import dev.brikk.chill.quarantine.Quarantine
 import dev.brikk.chill.quarantine.generator.buildtime.LambdaBuildVerifier
 import org.gradle.api.DefaultTask
@@ -12,6 +14,7 @@ import org.gradle.api.provider.SetProperty
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -40,6 +43,16 @@ abstract class ChillVerifyLambdasTask : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val additionalPolicyFiles: ConfigurableFileCollection
 
+    /**
+     * Directory of `<name>.ctena` library policy overrides (normally the output of the
+     * `chillGeneratePolicy*` tasks). A `kotlin-stdlib.ctena` here replaces the shipped stdlib
+     * policy inside the `kotlin-full` base policy.
+     */
+    @get:InputFiles
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val policyOverrideDirectory: DirectoryProperty
+
     @get:Input
     abstract val failOnViolation: Property<Boolean>
 
@@ -52,7 +65,8 @@ abstract class ChillVerifyLambdasTask : DefaultTask() {
     @TaskAction
     fun run() {
         val basePolicy = when (val name = policy.get()) {
-            ChillExtension.POLICY_KOTLIN_FULL -> Quarantine.painlessPlusKotlinFullPolicy
+            ChillExtension.POLICY_KOTLIN_FULL ->
+                Quarantine.painlessPlusKotlinBootstrapPolicy + libraryPolicy(LibraryPolicies.KOTLIN_STDLIB) { LibraryPolicies.kotlinStdlib }
             ChillExtension.POLICY_KOTLIN_BOOTSTRAP -> Quarantine.painlessPlusKotlinBootstrapPolicy
             ChillExtension.POLICY_BASE_JDK -> Quarantine.painlessPlusBaseJdkPolicy
             else -> throw GradleException("Unknown chill policy '$name'")
@@ -103,5 +117,17 @@ abstract class ChillVerifyLambdasTask : DefaultTask() {
         if (failures.isNotEmpty() && failOnViolation.get()) {
             throw GradleException("${failures.size} lambda class(es) violate the chill policy; see log for details")
         }
+    }
+
+    /**
+     * The override file for [name] from [policyOverrideDirectory] when present, else [shipped].
+     * Read directly rather than through `ChillPolicyLoader.overrideDirectory`: that (and the
+     * `LibraryPolicies` lazies) are JVM-wide state that would leak across builds in the daemon.
+     */
+    private fun libraryPolicy(name: String, shipped: () -> Set<String>): Set<String> {
+        val file = policyOverrideDirectory.orNull?.asFile?.resolve("$name.${ChillPolicyLoader.POLICY_FILE_EXTENSION}")
+        if (file == null || !file.isFile) return shipped()
+        logger.lifecycle("[chill] library policy '$name' overridden from $file")
+        return file.inputStream().use { ChillPolicyLoader.parse(it) }
     }
 }

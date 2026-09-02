@@ -8,14 +8,14 @@ import java.io.File
  * encoders, decoders) with no IO / process / reflection-invoke surface, so its public API is
  * generated in full ([ScanMode.ALL]) rather than per-member verified.
  *
- * The jar must be loadable through [classLoader] (its classes are reflected on to enumerate
+ * [jarFiles] must be loadable through [classLoader] (its classes are reflected on to enumerate
  * members); this runs at build time, never in a client or server process.
  */
 class KotlinxSerializationPolicyGenerator(
-    jar: File,
+    jarFiles: List<File>,
     classLoader: ClassLoader = KotlinxSerializationPolicyGenerator::class.java.classLoader,
 ) : JarAllowancesGenerator(
-    jarFiles = listOf(jar.path),
+    jarFiles = jarFiles.map { it.path },
     scanMode = ScanMode.ALL,
     preFilterPackageWhiteList = listOf(PACKAGE),
     postFilterPackageWhiteList = listOf(PACKAGE),

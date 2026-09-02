@@ -1,6 +1,8 @@
 package dev.brikk.chill.gradle
 
+import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.provider.SetProperty
 
@@ -44,4 +46,18 @@ abstract class ChillExtension {
 
     /** Write the verification manifest into the jar so the runtime can skip re-verification (default true). */
     abstract val writeManifest: Property<Boolean>
+
+    /**
+     * Library policies to regenerate from this build's own dependency versions (see [ChillPolicySpec]).
+     * Each registered spec gets a `chillGeneratePolicy<Name>` task; `chillGeneratePolicies` runs
+     * them all. Generated files replace the shipped policy of the same name for `chillVerifyLambdas`.
+     */
+    abstract val policies: NamedDomainObjectContainer<ChillPolicySpec>
+
+    /**
+     * Where generated policies are written and where `chillVerifyLambdas` looks for overrides
+     * (default `build/chill/policy`). Hand this directory to the runtime as `chill.policy.dir`,
+     * or copy its files into the OpenSearch plugin's `config/chill-script/`.
+     */
+    abstract val policyDirectory: DirectoryProperty
 }

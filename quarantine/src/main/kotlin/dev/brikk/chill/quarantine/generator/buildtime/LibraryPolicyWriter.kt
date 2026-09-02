@@ -18,18 +18,20 @@ object LibraryPolicyWriter {
     class Written(val name: String, val file: File, val generatedLines: Int, val supportLines: Int)
 
     /**
-     * @param outputRoot resources root; the file lands at `META-INF/chill/policy/<name>.ctena`
+     * @param outputDir directory the file lands in, as `<name>.ctena`. For a classpath resource
+     *   that is `<resourcesRoot>/META-INF/chill/policy`; for an override directory, the directory
+     *   itself (see [ChillPolicyLoader])
      * @param supportLines hand-written allowances appended after the generated ones
      */
     fun write(
         name: String,
         generator: JarAllowancesGenerator,
-        outputRoot: File,
+        outputDir: File,
         supportLines: Collection<String> = emptyList(),
         supportDescription: String = "hand-written support allowances",
     ): Written {
         val generated = generator.generatePolicy()
-        val file = File(outputRoot, "${ChillPolicyLoader.POLICY_RESOURCE_ROOT}/$name.${ChillPolicyLoader.POLICY_FILE_EXTENSION}")
+        val file = File(outputDir, "$name.${ChillPolicyLoader.POLICY_FILE_EXTENSION}")
         file.parentFile.mkdirs()
         file.bufferedWriter().use { out ->
             out.appendLine("# chill policy: $name")

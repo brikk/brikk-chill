@@ -10,6 +10,10 @@ import org.gradle.api.tasks.SourceSet
  * Chill quarantine policy at build time, failing the build on violations, and ships a
  * verification manifest in the jar so the runtime can skip re-verifying unchanged lambdas.
  *
+ * Optionally regenerates named library policies from this build's own dependency versions
+ * (`chill.policies`), producing override files that both the verification here and the runtime
+ * can use in place of the policies shipped in the chill jars.
+ *
  * Apply alongside a JVM language plugin (e.g. `org.jetbrains.kotlin.jvm`).
  */
 class ChillPlugin : Plugin<Project> {
@@ -19,6 +23,41 @@ class ChillPlugin : Plugin<Project> {
         extension.mode.convention("all")
         extension.failOnViolation.convention(true)
         extension.writeManifest.convention(true)
+        extension.policyDirectory.convention(project.layout.buildDirectory.dir("chill/policy"))
+
+        val generateAll = project.tasks.register("chillGeneratePolicies") { task ->
+            task.group = "build"
+            task.description = "Generates every library policy registered in chill.policies"
+        }
+
+        extension.policies.all { spec ->
+            spec.profile.convention(
+                when (spec.name) {
+                    ChillPolicySpec.PROFILE_KOTLIN_STDLIB, ChillPolicySpec.PROFILE_KOTLINX_SERIALIZATION_CORE -> spec.name
+                    else -> ChillPolicySpec.PROFILE_CUSTOM
+                },
+            )
+            spec.scanMode.convention("safe")
+
+            val generate = project.tasks.register(
+                "chillGeneratePolicy${spec.name.toTaskNamePart()}",
+                ChillGeneratePolicyTask::class.java,
+            ) { task ->
+                task.group = "build"
+                task.description = "Generates the chill library policy '${spec.name}' from this build's dependencies"
+                task.policyName.set(spec.name)
+                task.jars.from(spec.jars)
+                task.classpath.from(spec.classpath)
+                task.profile.set(spec.profile)
+                task.scanMode.set(spec.scanMode)
+                task.packages.set(spec.packages)
+                task.excludePackages.set(spec.excludePackages)
+                task.excludeClasses.set(spec.excludeClasses)
+                task.supportPolicies.set(spec.supportPolicies)
+                task.outputDirectory.set(extension.policyDirectory)
+            }
+            generateAll.configure { it.dependsOn(generate) }
+        }
 
         project.plugins.withId("java-base") {
             val sourceSets = project.extensions.getByType(JavaPluginExtension::class.java).sourceSets
@@ -36,6 +75,9 @@ class ChillPlugin : Plugin<Project> {
                     task.failOnViolation.set(extension.failOnViolation)
                     task.writeManifest.set(extension.writeManifest)
                     task.manifestDir.set(project.layout.buildDirectory.dir("generated/chill-manifest"))
+                    // regenerated library policies replace the shipped ones for verification too
+                    task.policyOverrideDirectory.set(extension.policyDirectory)
+                    task.dependsOn(generateAll)
                 }
 
                 // ship the manifest as a main resource inside the jar
@@ -45,4 +87,7 @@ class ChillPlugin : Plugin<Project> {
             }
         }
     }
+
+    private fun String.toTaskNamePart(): String =
+        split('-', '_', '.', ' ').filter { it.isNotEmpty() }.joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
 }

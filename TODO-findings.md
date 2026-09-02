@@ -96,8 +96,12 @@ Done:
 - Found while testing: enum `values()` compiles to `Object.clone()`, which no policy allowed, so
   a `@Serializable enum` in a bound class could never verify. Added to the Kotlin bootstrap policy.
 
-Follow-up (separate commit): Gradle plugin task so consumers can regenerate a named policy
-against their own library versions and produce the override file.
+- Gradle plugin: `chill.policies { register("<name>") { jars.from(...) } }` registers
+  `chillGeneratePolicy<Name>` (shipped profiles `kotlin-stdlib`, `kotlinx-serialization-core`, or
+  `custom`), scanning through an isolated platform-parent `URLClassLoader` so the policy describes
+  the consumer's jars and not the daemon's. Output `build/chill/policy/` doubles as the override
+  dir for `chillVerifyLambdas` and is what to hand to the runtime. Functional tests cover a real
+  stdlib regeneration and a narrowed override replacing (not merging with) the shipped policy.
 
 ## Medium (generality)
 

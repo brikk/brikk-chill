@@ -1,5 +1,6 @@
 package dev.brikk.chill.quarantine.generator.buildtime
 
+import dev.brikk.chill.policy.ChillPolicyLoader
 import dev.brikk.chill.quarantine.KotlinxSerializationSupportPolicies
 import dev.brikk.chill.quarantine.LibraryPolicies
 import dev.brikk.chill.quarantine.generator.jarfile.KotlinStdlibPolicyGenerator
@@ -15,20 +16,20 @@ import java.io.File
  */
 fun main(args: Array<String>) {
     require(args.size == 2) { "usage: GenerateKotlinPolicies <outputResourcesDir> <kotlinxSerializationCoreJar>" }
-    val outputRoot = File(args[0])
+    val outputDir = File(args[0], ChillPolicyLoader.POLICY_RESOURCE_ROOT)
     val kotlinxJar = File(args[1]).also { require(it.isFile) { "kotlinx-serialization-core jar not found: $it" } }
 
     val stdlib = LibraryPolicyWriter.write(
         name = LibraryPolicies.KOTLIN_STDLIB,
         generator = KotlinStdlibPolicyGenerator(),
-        outputRoot = outputRoot,
+        outputDir = outputDir,
     )
     report(stdlib)
 
     val kotlinx = LibraryPolicyWriter.write(
         name = LibraryPolicies.KOTLINX_SERIALIZATION_CORE,
-        generator = KotlinxSerializationPolicyGenerator(kotlinxJar),
-        outputRoot = outputRoot,
+        generator = KotlinxSerializationPolicyGenerator(listOf(kotlinxJar)),
+        outputDir = outputDir,
         supportLines = KotlinxSerializationSupportPolicies.policy,
         supportDescription = "support for compiler-generated @Serializable / Companion / \$serializer classes",
     )

@@ -128,8 +128,10 @@ never by hand-listing and never at runtime. Both policies ship as
 `META-INF/chill/policy/<name>.ctena` resources in the `quarantine` jar (`LibraryPolicies`), so
 client and server hold the identical policy for the identical library versions.
 
-To run against a library version this build has not seen, regenerate the named policy with
-`LibraryPolicyWriter` and drop the file where `ChillPolicyLoader` looks: on the server, the
+To run against a library version this build has not seen, regenerate the named policy from your
+own dependencies with the Gradle plugin (`chill { policies { register("kotlin-stdlib") { jars.from(...) } } }`
+-> `build/chill/policy/<name>.ctena`; `chillVerifyLambdas` uses it automatically) and drop the file
+where `ChillPolicyLoader` looks: on the server, the
 plugin's config directory (`config/chill-script/<name>.ctena`); on the client, an explicit
 `ChillPolicyLoader.overrideDirectory` or the `chill.policy.dir` system property. An override
 **replaces** the shipped policy of that name. Without an override, version skew fails closed

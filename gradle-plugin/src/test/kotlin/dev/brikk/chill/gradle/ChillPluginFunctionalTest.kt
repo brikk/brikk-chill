@@ -13,7 +13,7 @@ class ChillPluginFunctionalTest {
     @TempDir
     lateinit var projectDir: File
 
-    private fun writeProject(lambdaBody: String) {
+    private fun writeProject(lambdaBody: String, chillBlock: String = """policy.set("kotlin-bootstrap")""") {
         File(projectDir, "settings.gradle.kts").writeText(
             """
             pluginManagement {
@@ -34,7 +34,7 @@ class ChillPluginFunctionalTest {
             repositories { mavenCentral() }
             kotlin { jvmToolchain(21) }
             chill {
-                policy.set("kotlin-bootstrap")
+                $chillBlock
             }
             """.trimIndent(),
         )
@@ -93,6 +93,60 @@ class ChillPluginFunctionalTest {
 
         val result = runner("chillVerifyLambdas").buildAndFail()
         assertTrue("System.getenv" in result.output) { "expected violation detail in output" }
+        assertTrue("violate the chill policy" in result.output)
+    }
+
+    private val stdlibJarsFromRuntimeClasspath =
+        """jars.from(configurations.runtimeClasspath.map { it.filter { f -> f.name.startsWith("kotlin-stdlib") } })"""
+
+    @Test
+    fun regeneratesStdlibPolicyFromTheBuildsOwnJarAndVerifiesWithIt() {
+        writeProject(
+            """ listOf("a", "b").joinToString("-") """,
+            """
+            policies {
+                register("kotlin-stdlib") { $stdlibJarsFromRuntimeClasspath }
+            }
+            """.trimIndent(),
+        )
+
+        val result = runner("chillVerifyLambdas").build()
+        assertEquals(TaskOutcome.SUCCESS, result.task(":chillGeneratePolicyKotlinStdlib")!!.outcome)
+        assertEquals(TaskOutcome.SUCCESS, result.task(":chillVerifyLambdas")!!.outcome)
+        assertTrue("library policy 'kotlin-stdlib' overridden from" in result.output) { result.output }
+        assertTrue("1 serializable lambda class(es), 0 violation(s)" in result.output) { result.output }
+
+        val generated = File(projectDir, "build/chill/policy/kotlin-stdlib.ctena")
+        assertTrue(generated.isFile) { "expected $generated" }
+        val lines = generated.readLines()
+        assertTrue(lines[0] == "# chill policy: kotlin-stdlib")
+        assertTrue(lines.any { it.startsWith("# source: kotlin-stdlib-2.4.10.jar sha256=") }) { lines.take(6).joinToString("\n") }
+        // a real stdlib scan, not something loaded off the daemon classpath by accident
+        assertTrue(lines.any { it.startsWith("kotlin.collections CollectionsKt.joinToString") }) { "generated policy lacks stdlib members" }
+    }
+
+    @Test
+    fun regeneratedPolicyReplacesTheShippedOneRatherThanMerging() {
+        // a deliberately narrowed "kotlin-stdlib": only kotlin.text. If the override merely merged
+        // with the shipped policy, kotlin.collections would still be allowed and this would pass.
+        writeProject(
+            """ listOf("a", "b").joinToString("-") """,
+            """
+            policies {
+                register("kotlin-stdlib") {
+                    $stdlibJarsFromRuntimeClasspath
+                    profile.set("custom")
+                    scanMode.set("all")
+                    packages.add("kotlin.text")
+                }
+            }
+            """.trimIndent(),
+        )
+
+        val result = runner("chillVerifyLambdas").buildAndFail()
+        assertEquals(TaskOutcome.SUCCESS, result.task(":chillGeneratePolicyKotlinStdlib")!!.outcome)
+        assertEquals(TaskOutcome.FAILED, result.task(":chillVerifyLambdas")!!.outcome)
+        assertTrue("kotlin.collections" in result.output) { result.output }
         assertTrue("violate the chill policy" in result.output)
     }
 }

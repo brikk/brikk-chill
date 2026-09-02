@@ -1,9 +1,21 @@
 package dev.brikk.chill.quarantine.generator.jarfile
 
 import dev.brikk.chill.quarantine.Quarantine
+import java.io.File
 
-class KotlinStdlibPolicyGenerator(classLoader: ClassLoader = KotlinStdlibPolicyGenerator::class.java.classLoader) : JarAllowancesGenerator(
-    jarFiles = ClassPathUtils.findKotlinStdLibOrEmbeddedCompilerJars(classLoader).map { it.path },
+/**
+ * Policy generator for kotlin-stdlib: every class is verified against the bootstrap policy
+ * ([ScanMode.SAFE]) and only the passing ones are allowed; IO / concurrency / coroutine packages
+ * are excluded outright.
+ *
+ * [jarFiles] must be loadable through [classLoader] (classes are reflected on to enumerate
+ * members). The no-jar constructor locates the stdlib on [classLoader]'s own classpath.
+ */
+class KotlinStdlibPolicyGenerator(
+    jarFiles: List<File>,
+    classLoader: ClassLoader = KotlinStdlibPolicyGenerator::class.java.classLoader,
+) : JarAllowancesGenerator(
+    jarFiles = jarFiles.map { it.path },
     preFilterPackageWhiteList = WhiteListedPrefixes,
     postFilterPackageWhiteList = WhiteListedPrefixes,
     postFilterClassBlackList = BlackListedClasses,
@@ -13,16 +25,19 @@ class KotlinStdlibPolicyGenerator(classLoader: ClassLoader = KotlinStdlibPolicyG
     useClassLoader = classLoader,
 ) {
 
+    constructor(classLoader: ClassLoader = KotlinStdlibPolicyGenerator::class.java.classLoader) :
+        this(ClassPathUtils.findKotlinStdLibOrEmbeddedCompilerJars(classLoader), classLoader)
+
     companion object {
-        private val BlackListedPackages = listOf(
+        val BlackListedPackages: List<String> = listOf(
             "kotlin.io",
             "kotlin.concurrent",
             "kotlin.coroutines",
         )
 
-        private val BlackListedClasses = emptySet<String>()
+        val BlackListedClasses: Set<String> = emptySet()
 
-        private val WhiteListedPrefixes = listOf(
+        val WhiteListedPrefixes: List<String> = listOf(
             "kotlin",
         )
     }
