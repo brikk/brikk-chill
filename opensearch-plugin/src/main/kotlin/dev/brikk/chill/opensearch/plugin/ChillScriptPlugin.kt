@@ -4,6 +4,7 @@ import dev.brikk.chill.opensearch.ChillOpenSearch
 import dev.brikk.chill.policy.ChillPolicyLoader
 import dev.brikk.chill.quarantine.LibraryPolicies
 import org.apache.logging.log4j.LogManager
+import org.opensearch.common.settings.Setting
 import org.opensearch.common.settings.Settings
 import org.opensearch.plugins.Plugin
 import org.opensearch.plugins.ScriptPlugin
@@ -16,6 +17,9 @@ import java.nio.file.Path
  * Registers the `chill` script language: inline script sources are chill-frozen Kotlin lambdas
  * (`chill~~<base64>`), verified against the server's quarantine policy before any class is
  * defined, then executed for the score / filter / field contexts.
+ *
+ * Execution limits (`chill.script.max_loop_iterations`, `chill.script.regex_limit_factor`) are
+ * enforced by instrumenting the verified classes; see [ExecutionLimits].
  *
  * Policy override: the shipped library policies can be replaced per name by dropping a
  * `<name>.ctena` into this plugin's config directory (`config/chill-script/`), e.g.
@@ -36,7 +40,9 @@ class ChillScriptPlugin(@Suppress("UNUSED_PARAMETER") settings: Settings, config
         ChillOpenSearch.chill
     }
 
+    override fun getSettings(): List<Setting<*>> = ExecutionLimits.ALL
+
     override fun getScriptEngine(settings: Settings, contexts: Collection<ScriptContext<*>>): ScriptEngine {
-        return ChillScriptEngine()
+        return ChillScriptEngine(ExecutionLimits.fromSettings(settings))
     }
 }

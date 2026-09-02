@@ -281,6 +281,53 @@ class ChillScriptEngineTests {
         assertEquals(2.0 * 120.0 * 3.0, remote)
     }
 
+    // ---- execution limits ----
+
+    private val limitedEngine = ChillScriptEngine(ExecutionLimits(maxLoopIterations = 10_000, regexLimitFactor = 6))
+
+    private fun <R> ChillScriptEngine.run(script: dev.brikk.chill.opensearch.ChillScript<R>, doc: Map<String, List<Any?>> = sampleDoc): Any? {
+        val compiled = compileChill("limited", script.source)
+        return compiled.execute(compiled.instantiate(), ChillSearchScript(script.params, doc, 0.0), compiled.decodeParams(script.params), doc, null)
+    }
+
+    @Test
+    fun runawayLoopFailsTheDocumentWithAScriptException() {
+        val spin = ChillOpenSearch.script(@ChillLambda {
+            var i = 0L
+            while (true) i++
+            @Suppress("UNREACHABLE_CODE") i
+        })
+        val ex = assertThrows<ScriptException> { limitedEngine.run(spin) }
+        assertTrue("loop iterations" in ex.message!!) { ex.message }
+        assertEquals("limited", ex.script)
+
+        // a loop that fits the budget is untouched, and the budget is per execution: it runs again
+        val tags = listOf("a", "b", "c", "d")
+        val fits = ChillOpenSearch.script(@ChillLambda { var n = 0; for (t in tags) for (i in 1..1000) n += t.length; n })
+        repeat(3) { assertEquals(4000, limitedEngine.run(fits)) }
+    }
+
+    @Test
+    fun catastrophicRegexFailsTheDocumentWithAScriptException() {
+        val input = "a".repeat(40) + "!"
+        val bomb = ChillOpenSearch.script(@ChillLambda { Regex("(a+)+b").containsMatchIn(input) })
+        val ex = assertThrows<ScriptException> { limitedEngine.run(bomb) }
+        assertTrue("regular expression exceeded" in ex.message!!) { ex.message }
+
+        val benign = ChillOpenSearch.script(@ChillLambda { stringVals("tags").count { Regex("^how").containsMatchIn(it) } })
+        assertEquals(1, limitedEngine.run(benign, sampleDoc + ("tags" to listOf("howto", "misc"))))
+    }
+
+    @Test
+    fun regexCanBeDisabledByFactorZero() {
+        val engine = ChillScriptEngine(ExecutionLimits(regexLimitFactor = 0))
+        val script = ChillOpenSearch.script(@ChillLambda { "x1".replace(Regex("\\d"), "") })
+        val ex = assertThrows<ScriptException> { engine.run(script) }
+        assertTrue("disabled" in ex.message!!) { ex.message }
+        // restore the static factor for the other tests (one engine per node in production)
+        ChillScriptEngine(ExecutionLimits())
+    }
+
     @Test
     fun tamperedPayloadIsRejected() {
         val script = ChillOpenSearch.script(@ChillLambda { 42 })

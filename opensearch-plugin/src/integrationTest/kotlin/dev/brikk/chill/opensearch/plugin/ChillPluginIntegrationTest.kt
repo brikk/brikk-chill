@@ -95,6 +95,8 @@ class ChillPluginIntegrationTest {
             .withEnv("DISABLE_SECURITY_PLUGIN", "true")
             .withEnv("DISABLE_INSTALL_DEMO_CONFIG", "true")
             .withEnv("OPENSEARCH_JAVA_OPTS", "-Xms512m -Xmx512m")
+            // small loop budget so the runaway-loop case proves the node setting is honoured
+            .withEnv("chill.script.max_loop_iterations", "50000")
             .withExposedPorts(9200)
             .waitingFor(Wait.forHttp("/_cluster/health").forPort(9200).forStatusCode(200))
             .withStartupTimeout(Duration.ofMinutes(3))
@@ -500,5 +502,44 @@ class ChillPluginIntegrationTest {
         val helper = ChillOpenSearch.script(@ChillLambda { doubleVal("bonus_multiplier", 42.0) })
         val helperScores = scriptScoreSearch(helper.toScript()).hits().hits().map { it.score()!! }.toSet()
         assertEquals(setOf(42.0), helperScores)
+    }
+
+    @Test
+    fun executionLimitsSurfaceAsScriptErrorsOverHttp() {
+        // runaway loop: stopped by the node's chill.script.max_loop_iterations (50k here), per document
+        val spin = ChillOpenSearch.script(docType<ArticleDoc>()) @ChillLambda { d ->
+            var acc = d.reads
+            while (acc >= 0) acc += 1.0
+            acc
+        }
+        val ex1 = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(spin.toScript()) }
+        assertTrue("loop iterations" in errorText(ex1)) { "got: ${errorText(ex1)}" }
+
+        // 100k iterations: fine under the 1M default, over the 50k this node is configured with,
+        // so this only passes if the setting reached the engine
+        val overBudget = ChillOpenSearch.script(@ChillLambda { var n = 0.0; for (i in 1..100_000) n += 1.0; n })
+        val ex1b = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(overBudget.toScript()) }
+        assertTrue("loop iterations" in errorText(ex1b)) { "got: ${errorText(ex1b)}" }
+
+        // a loop under the budget runs normally
+        val bounded = ChillOpenSearch.script(docType<ArticleDoc>()) @ChillLambda { d ->
+            var n = 0.0
+            for (i in 1..10_000) n += 1.0
+            n + d.reads
+        }
+        val scores = scriptScoreSearch(bounded.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        assertEquals(10_000.0 + 900.0, scores.getValue("fresh-weighted-topic"), 1e-3)
+
+        // catastrophic backtracking: cut off by the regex limit factor
+        val victim = "a".repeat(40) + "!"
+        val bomb = ChillOpenSearch.script(@ChillLambda { if (Regex("(a+)+b").containsMatchIn(victim)) 1.0 else 2.0 })
+        val ex2 = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(bomb.toScript()) }
+        assertTrue("regular expression exceeded" in errorText(ex2)) { "got: ${errorText(ex2)}" }
+
+        // ordinary regex over doc values keeps working
+        val tagged = ChillOpenSearch.script(@ChillLambda { if (stringVals("tags").any { Regex("^how").containsMatchIn(it) }) 5.0 else 1.0 })
+        val tagScores = scriptScoreSearch(tagged.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        assertEquals(5.0, tagScores.getValue("fresh-weighted-topic"))
+        assertEquals(1.0, tagScores.getValue("penalized-author"))
     }
 }

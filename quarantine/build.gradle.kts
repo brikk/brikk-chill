@@ -7,6 +7,7 @@ dependencies {
     api(project(":policy"))
     implementation(project(":policy-painless"))
     implementation(libs.asm)
+    implementation(libs.asm.tree)
 
     testImplementation(project(":annotations"))
     testImplementation(libs.kotlinx.serialization.core)

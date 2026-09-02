@@ -8,26 +8,39 @@ Status legend: `[ ]` open, `[x]` done, `[-]` won't fix / documented instead.
 
 ## High
 
-### [ ] 1. No execution bounds on scripts (DoS)
+### [x] 1. No execution bounds on scripts (DoS)
 
-The sandbox verifies *what* code references, not *how long* it runs.
-`ChillOpenSearch.scriptKotlinPackagePolicies` (`opensearch-script/.../ChillOpenSearch.kt:60`)
-opens `kotlin.collections` / `kotlin.text` / `kotlin.sequences` / `kotlin.ranges` /
-`kotlin.comparisons` wholesale, so any of these inside a per-document score function pins or OOMs
-a data node:
+Was: the sandbox verified *what* code references, not *how long* it runs. `kotlin.text` /
+`kotlin.collections` are allowed wholesale, so `while (true) {}`, huge `repeat`, or a
+catastrophic-backtracking `Regex` in a per-document score function pinned a data node. The HMAC
+key is public, so anyone who can query can send a payload.
 
-- `while (true) {}`
-- `"x".repeat(Int.MAX_VALUE)`
-- a catastrophic-backtracking `Regex`
+Done (ported from Painless's `max_loop_counter` / `regex.limit-factor`, as bytecode
+instrumentation of the verified classes on the server, after verification and before define):
+- **Loops**: `ExecutionBudget.tick()` inserted before every backward branch. The budget is
+  per thread and re-armed by the engine per document execution, so nested loops, helper methods
+  and recursion share it (stricter than Painless's per-function slot). Node setting
+  `chill.script.max_loop_iterations`, default 1,000,000.
+- **Regex**: every call site of `kotlin.text.Regex.*`, the `StringsKt` regex extensions,
+  `Pattern.*`/`Matcher.*` taking a `CharSequence` has the input wrapped in
+  `LimitedCharSequence` (charAt count <= factor x length); `Pattern.asPredicate()` (the one
+  unlimited JDK path the base policy exposed) is redirected to a limited predicate; foreign
+  method handles to regex ops are rejected at compile. Kotlin compiles `regex::matches` to a
+  `FunctionReferenceImpl` class with an ordinary call site, so it is limited too. Node setting
+  `chill.script.regex_limit_factor`, default 6; 0 disables regex.
+- Neither rewrite changes stack depth or frame-visible locals, so no frames are recomputed and
+  no class needs loading during instrumentation.
+- `ChillExecutionLimitError extends Error`; the engine converts it to a `ScriptException` naming
+  the script. A script `catch (Throwable)` cannot loop on: the budget stays exhausted.
+- Found while testing: `ScriptClassLoader` was parent-first, so a shipped class name the parent
+  could see resolved to the parent's class. Made child-first for shipped names. Besides making
+  instrumentation testable, this closes a thaw hole: shipped names are granted
+  `ref_Class_Instance`, so a payload could ship harmless bytes under the name of a Serializable
+  server class and have the *real* class deserialized with attacker-chosen fields.
 
-Painless has `max_loop_counter` and `regex.limit-factor` for exactly this. The HMAC key is a
-public constant (`serialize/.../Chill.kt:69`), so anyone who can send a query can send a payload.
-
-Options:
-- ASM rewriting pass at compile that injects a decrementing loop counter at backward branches
-  (throw on exhaustion). ASM is already in-tree.
-- Ban or limit `kotlin.text.Regex` (or wrap with a step-limited matcher).
-- At minimum: document as a loud, known limitation.
+Not bounded: allocation size (`ByteArray(Int.MAX_VALUE)`, `"x".repeat(1e9)`) and recursion
+depth (self-limiting via StackOverflowError, which propagates as a normal error). Painless does
+not bound these either; the JVM heap limit is the backstop. Tracked as a Low item.
 
 ### [x] 2. Payload size vs `script.max_size_in_bytes`
 
@@ -169,6 +182,11 @@ Design §5 lists `ScriptScoreQuery.Builder.chill(...)`, `FunctionScore.Builder.c
 at the call site.
 
 ## Low
+
+- [ ] Allocation bounds: a script can still allocate up to the heap (`"x".repeat(1e9)`,
+      `LongArray(Int.MAX_VALUE)`). Painless has the same gap. Options: rewrite `NEWARRAY`/
+      `ANEWARRAY`/`MULTIANEWARRAY` call sites to check size, and wrap `repeat`/`StringBuilder`
+      growth; or accept the heap as the backstop and document.
 
 - [ ] **Per-document hot path** (`ChillScriptEngine.kt:83-116`): `slots.map` allocates a list,
       `when (slot.kind)` string-dispatches, and a `ChillSearchScript` is built even when

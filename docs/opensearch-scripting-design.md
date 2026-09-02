@@ -242,6 +242,24 @@ Caching layers, outermost first: OpenSearch script compile cache (per source) �
 memo (per class-set + policy) → scan cache (per class bytes). Verification of a repeated script
 costs a map lookup.
 
+## 7a. Execution limits
+
+Verification bounds *what* a script may reference; execution limits bound *how long* it runs.
+After verification and before any class is defined, the plugin instruments the shipped bytes
+(`ExecutionLimitInstrumenter`, in `quarantine`):
+
+- every backward branch calls `ExecutionBudget.tick()`; the engine arms a per-thread budget
+  before each document, so all loops, helpers and recursion in one execution share
+  `chill.script.max_loop_iterations` (default 1,000,000)
+- every regex operation's `CharSequence` input (`kotlin.text.Regex`, `StringsKt` regex
+  extensions, `Pattern`/`Matcher`) is wrapped in `LimitedCharSequence`, which aborts once
+  character reads exceed `chill.script.regex_limit_factor` x input length (default 6; 0 disables
+  regex); `Pattern.asPredicate()` is redirected to a limited predicate
+
+Both surface as `ScriptException` for that document. Same model as Painless's
+`max_loop_counter` and `regex.limit-factor`, applied to compiled Kotlin instead of a Painless AST.
+Local `evaluate()` on the client runs the original, uninstrumented lambda.
+
 ## 8. Envelope v3 (freeze generalization — standing TODO, independent of OpenSearch)
 
 The freeze envelope generalizes from `(receiver, return)` to `(receiver, return, slots[])` where

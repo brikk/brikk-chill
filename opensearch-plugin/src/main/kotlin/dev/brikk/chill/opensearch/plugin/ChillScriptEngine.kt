@@ -9,6 +9,10 @@ import dev.brikk.chill.opensearch.ParamsCodec
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.policy.toPolicy
+import dev.brikk.chill.quarantine.limits.ChillExecutionLimitError
+import dev.brikk.chill.quarantine.limits.ExecutionBudget
+import dev.brikk.chill.quarantine.limits.ExecutionLimitInstrumenter
+import dev.brikk.chill.quarantine.limits.LimitedCharSequence
 import dev.brikk.chill.serialize.Chill
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.serializer
@@ -25,11 +29,18 @@ import org.opensearch.search.lookup.SearchLookup
 import kotlin.jvm.javaObjectType
 import kotlin.reflect.KClass
 
-class ChillScriptEngine : ScriptEngine {
+class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : ScriptEngine {
 
     companion object {
         val SUPPORTED_CONTEXTS: Set<ScriptContext<*>> =
             setOf(ScoreScript.CONTEXT, FilterScript.CONTEXT, FieldScript.CONTEXT)
+    }
+
+    private val instrumenter = ExecutionLimitInstrumenter()
+
+    init {
+        // instrumented code reads the factor statically; one engine per node
+        LimitedCharSequence.limitFactor = limits.regexLimitFactor
     }
 
     override fun getType(): String = ChillOpenSearch.LANGUAGE
@@ -46,6 +57,7 @@ class ChillScriptEngine : ScriptEngine {
      * state never crosses threads; per-document execution reuses the leaf instance.
      */
     class CompiledChillScript<R>(
+        val scriptName: String?,
         val className: String,
         private val serializedLambda: ByteArray,
         private val classLoader: ClassLoader,
@@ -54,6 +66,7 @@ class ChillScriptEngine : ScriptEngine {
         scoreAccessed: Boolean,
         val slots: List<SlotPlan>,
         private val boundReceiver: Boolean,
+        private val maxLoopIterations: Long,
         private val decodeResult: (Any?) -> R,
     ) {
         val needsSource: Boolean = slots.any { it.kind == ChillSlot.KIND_SOURCE }
@@ -69,7 +82,8 @@ class ChillScriptEngine : ScriptEngine {
 
         /**
          * Invokes the lambda for one document: builds slot arguments in declared order and
-         * dispatches on arity (`R.(A...) -> T` is `Function{1+n}`).
+         * dispatches on arity (`R.(A...) -> T` is `Function{1+n}`). Each call arms the
+         * per-execution loop budget; an exhausted limit surfaces as a [ScriptException].
          */
         @Suppress("UNCHECKED_CAST")
         fun execute(
@@ -95,7 +109,21 @@ class ChillScriptEngine : ScriptEngine {
                 }
             }
             val invocationReceiver: Any = if (boundReceiver) ChillBoundScript else receiver
-            val result = when (args.size) {
+            ExecutionBudget.begin(maxLoopIterations)
+            val result = try {
+                invoke(fn, invocationReceiver, args)
+            } catch (ex: ChillExecutionLimitError) {
+                throw ScriptException(
+                    "chill script exceeded an execution limit: ${ex.message}",
+                    ex, emptyList(), scriptName ?: "<inline>", ChillOpenSearch.LANGUAGE,
+                )
+            }
+            return decodeResult(result)
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun invoke(fn: Any, invocationReceiver: Any, args: List<Any?>): Any? =
+            when (args.size) {
                 0 -> (fn as kotlin.jvm.functions.Function1<Any?, Any?>).invoke(invocationReceiver)
                 1 -> (fn as kotlin.jvm.functions.Function2<Any?, Any?, Any?>).invoke(invocationReceiver, args[0])
                 2 -> (fn as kotlin.jvm.functions.Function3<Any?, Any?, Any?, Any?>).invoke(
@@ -113,8 +141,6 @@ class ChillScriptEngine : ScriptEngine {
 
                 else -> throw IllegalStateException("unsupported slot arity ${args.size}")
             }
-            return decodeResult(result)
-        }
     }
 
     fun compileChill(name: String?, code: String): CompiledChillScript<Any?> =
@@ -193,8 +219,20 @@ class ChillScriptEngine : ScriptEngine {
             }
         }
 
+        // verified bytes are instrumented for execution limits (loop budget, regex input caps)
+        // before anything is defined; the inserted calls target trusted runtime classes
         val classLoader = ScriptClassLoader(javaClass.classLoader).apply {
-            data.classes.forEach { addClass(it.className, it.bytes) }
+            data.classes.forEach {
+                val instrumented = try {
+                    instrumenter.instrument(it.bytes)
+                } catch (ex: ExecutionLimitInstrumenter.InstrumentationRejectedException) {
+                    throw ScriptException(
+                        "chill script cannot be execution-limited: ${ex.message}",
+                        ex, emptyList(), name ?: "<inline>", ChillOpenSearch.LANGUAGE,
+                    )
+                }
+                addClass(it.className, instrumented)
+            }
         }
 
         // deserialization may reference exactly the classes that were just byte-verified
@@ -229,9 +267,9 @@ class ChillScriptEngine : ScriptEngine {
         }
 
         return CompiledChillScript(
-            data.className, data.serializedLambda, classLoader, additionalPolicies,
+            name, data.className, data.serializedLambda, classLoader, additionalPolicies,
             ChillOpenSearch.chill, scoreAccessed, slotPlans,
-            data.receiverClassName == boundReceiverName, decodeResult,
+            data.receiverClassName == boundReceiverName, limits.maxLoopIterations, decodeResult,
         )
     }
 
