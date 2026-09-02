@@ -70,5 +70,9 @@ internal object KotlinBootstrapPolicies {
 
         // @JvmSerializableLambda lambdas implement java.io.Serializable
         PolicyAllowance.ClassLevel.ClassAccess("java.io.Serializable", setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance)),
+
+        // enum `values()` is compiled as `$VALUES.clone()`. Object.clone is protected, so the JVM
+        // verifier only permits this call on arrays or on the calling class's own instances.
+        PolicyAllowance.ClassLevel.ClassMethodAccess("java.lang.Object", "clone", "()Ljava/lang/Object;", setOf(AccessTypes.call_Class_Instance_Method)),
     ) + intrinsicsNullChecks + functionInterfaceRefs).toPolicy()
 }

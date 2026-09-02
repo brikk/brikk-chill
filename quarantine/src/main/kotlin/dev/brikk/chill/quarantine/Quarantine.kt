@@ -5,7 +5,6 @@ import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.ChillPolicyLoader
 import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.quarantine.KotlinBootstrapPolicies.kotlinBootstrapPolicy
-import dev.brikk.chill.quarantine.generator.jarfile.KotlinStdlibPolicyGenerator
 
 /**
  * Verifies that JVM classes only reference classes/members allowed by a policy.
@@ -24,9 +23,12 @@ class Quarantine(
         @JvmStatic
         val painlessPlusKotlinBootstrapPolicy: Set<String> by lazy { painlessPlusBaseJdkPolicy + kotlinBootstrapPolicy }
 
-        /** Bootstrap policy plus a generated policy for the verified-safe subset of kotlin-stdlib. */
+        /**
+         * Bootstrap policy plus the shipped, build-time generated policy for the verified-safe
+         * subset of kotlin-stdlib ([LibraryPolicies.kotlinStdlib]).
+         */
         @JvmStatic
-        val painlessPlusKotlinFullPolicy: Set<String> by lazy { painlessPlusKotlinBootstrapPolicy + KotlinStdlibPolicyGenerator().generatePolicy() }
+        val painlessPlusKotlinFullPolicy: Set<String> by lazy { painlessPlusKotlinBootstrapPolicy + LibraryPolicies.kotlinStdlib }
 
         @JvmStatic
         val default: Quarantine by lazy { Quarantine(painlessPlusKotlinFullPolicy) }
