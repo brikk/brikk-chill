@@ -49,25 +49,24 @@ so removal means rewriting user bytecode, for ~1.2 KB uncompressed per class (a 
 bytes compressed). Revisit only if payloads grow again. `kotlin.Metadata` is the other large
 attribute; stripping it is riskier (kotlinx reflection-lite may consult it) and was not attempted.
 
-### [ ] 3. Unmapped doc fields throw instead of defaulting
+### [x] 3. Unmapped doc fields throw instead of defaulting
 
-`LeafDocLookup.get()` throws `IllegalArgumentException("No field found for [x] in mapping")` for
-fields absent from the mapping; only `containsKey` is safe. Both call `get`:
+Was: `LeafDocLookup.get()` throws `IllegalArgumentException("No field found for [x] in mapping")`
+for fields absent from the mapping (only `containsKey` is safe; `size`/`isEmpty`/`keySet` throw
+too). `DocValuesCodec` and `ChillSearchScript.values()` both called `get`, so a bound class whose
+property had no mapped field failed the whole query on the server while constructing the same
+class locally used the default. The integration test only passed because the IAE message
+happened to contain the field name.
 
-- `opensearch-script/.../DocValuesCodec.kt:84` — `doc[name].isNullOrEmpty()`
-- `opensearch-script/.../ChillSearchScript.kt:26` — `doc[field] ?: emptyList()`
+Done: every lookup goes through `DocValuesCodec.docValues(field)`, which probes `containsKey`
+first; unmapped and mapped-but-empty both read as "no values", so kotlinx applies the default or
+raises `MissingFieldException` naming the field. Unit test uses a `LeafDocLookup`-shaped stub
+(`get` throws, `containsKey` safe, `size` throws); integration test checks a bound class with an
+unmapped defaulted field scores identically via `evaluate` and on the node, that receiver
+helpers default on unmapped fields, and that the required-field error is kotlinx's and not the
+lookup's.
 
-So "missing field, property has default -> default used" (design doc §4) only holds when the
-field is *mapped* but empty for that doc. Against an index where the field isn't mapped at all,
-the query fails. This also breaks local/remote parity: locally `ArticleDoc(...)` uses the
-default; remotely the search 500s.
-
-`rejectionsSurfaceCleanlyOverHttp` (integration test, line 437) passes only because the IAE
-message happens to contain the field name.
-
-Fix: guard with `containsKey` before `get` in both places. Add a unit test with a stub doc map
-whose `get` throws for unknown keys, and an integration case with a mapped-but-absent field vs an
-unmapped field.
+Not changed: raw `doc["unmapped"]` on the receiver still throws, as it does in Painless.
 
 ### [x] 4. Policy built by scanning jars at runtime, on the client too
 

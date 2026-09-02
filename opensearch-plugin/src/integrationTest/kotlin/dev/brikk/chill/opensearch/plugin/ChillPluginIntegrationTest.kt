@@ -58,6 +58,13 @@ class ArticleDoc(
     @Contextual @SerialName("posted_at") val postedAt: ZonedDateTime,
 )
 
+/** `bonus_multiplier` is not in the index mapping at all; its default must apply on both sides. */
+@Serializable
+class ArticleWithUnmappedField(
+    @SerialName("read_count") val reads: Double = 0.0,
+    @SerialName("bonus_multiplier") val bonus: Double = 1.5,
+)
+
 @Serializable
 class NeedsMissingField(
     @SerialName("no_such_field") val required: String,
@@ -434,11 +441,13 @@ class ChillPluginIntegrationTest {
             assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(garbage) }
         assertTrue("chill" in errorText(ex2)) { "got: ${errorText(ex2)}" }
 
-        // missing required doc field -> loud, named
+        // missing required doc field (not even in the mapping) -> kotlinx's error naming the field,
+        // not the doc lookup's "No field found ... in mapping"
         val needy = ChillOpenSearch.script(docType<NeedsMissingField>()) @ChillLambda { d -> d.required.length }
         val ex3 =
             assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(needy.toScript()) }
-        assertTrue("no_such_field" in errorText(ex3)) { "got: ${errorText(ex3)}" }
+        val text3 = errorText(ex3)
+        assertTrue("no_such_field" in text3 && "required" in text3 && "No field found" !in text3) { "got: $text3" }
     }
 
     @Test
@@ -471,5 +480,25 @@ class ChillPluginIntegrationTest {
         localScores.forEach { (id, localScore) ->
             assertEquals(localScore, remoteScores.getValue(id), 1e-3) { "local/remote score mismatch for $id" }
         }
+    }
+
+    @Test
+    fun unmappedDocFieldWithDefaultScoresTheSameLocallyAndRemotely() {
+        val ranking = ChillOpenSearch.boundScore(
+            paramOf(rankParams),
+            docType<ArticleWithUnmappedField>(),
+        ) @ChillLambda { _, d -> d.reads * d.bonus }
+
+        val local = fixtures.associate { it.id to ranking.evaluate(ArticleWithUnmappedField(reads = it.reads)) }
+        val remote = scriptScoreSearch(ranking.toScript()).hits().hits().associate { it.id() to it.score()!! }
+
+        assertEquals(local.keys, remote.keys)
+        local.forEach { (id, score) ->
+            assertEquals(score, remote.getValue(id), 1e-3) { "unmapped-field default must apply server side for $id" }
+        }
+        // receiver helpers on an unmapped field: default, not an error
+        val helper = ChillOpenSearch.script(@ChillLambda { doubleVal("bonus_multiplier", 42.0) })
+        val helperScores = scriptScoreSearch(helper.toScript()).hits().hits().map { it.score()!! }.toSet()
+        assertEquals(setOf(42.0), helperScores)
     }
 }

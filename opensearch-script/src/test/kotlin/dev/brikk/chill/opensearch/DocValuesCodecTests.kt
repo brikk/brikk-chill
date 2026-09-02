@@ -75,4 +75,41 @@ class DocValuesCodecTests {
         }
         assertTrue("posted_at" in ex.message!!)
     }
+
+    /**
+     * Mirrors `org.opensearch.search.lookup.LeafDocLookup`: `get` throws for a field that is not
+     * in the mapping, `containsKey` is the only safe probe, and size/isEmpty/keySet throw.
+     */
+    private class LeafDocLookupLike(private val mapped: Map<String, List<Any?>>) : AbstractMap<String, List<Any?>>() {
+        override fun get(key: String): List<Any?> =
+            mapped[key] ?: throw IllegalArgumentException("No field found for [$key] in mapping")
+
+        override fun containsKey(key: String): Boolean = key in mapped
+        override val entries: Set<Map.Entry<String, List<Any?>>> get() = throw UnsupportedOperationException()
+        override val size: Int get() = throw UnsupportedOperationException()
+        override fun isEmpty(): Boolean = throw UnsupportedOperationException()
+    }
+
+    @Test
+    fun unmappedFieldsBehaveLikeMissingFieldsAgainstAnOpenSearchStyleDocMap() {
+        // only two of ArticleDoc's fields exist in this "mapping"
+        val doc = LeafDocLookupLike(mapOf("posted_at" to listOf<Any?>(date), "reads" to listOf(10.0)))
+
+        val decoded = DocValuesCodec.decode(serializer<ArticleDoc>(), doc)
+        assertEquals(10.0, decoded.reads)
+        assertEquals(0.0, decoded.popularity) // unmapped -> default, not "No field found"
+        assertEquals(emptyList<String>(), decoded.labels)
+
+        // and a required unmapped field is the kotlinx error naming the field, not the lookup's IAE
+        @Serializable
+        class Needs(@SerialName("no_such_field") val required: String)
+        val ex = assertThrows<MissingFieldException> { DocValuesCodec.decode(serializer<Needs>(), doc) }
+        assertTrue("no_such_field" in ex.message!!)
+
+        // receiver helpers take the same path
+        val receiver = ChillSearchScript(emptyMap(), doc, 0.0)
+        assertEquals(10.0, receiver.doubleVal("reads"))
+        assertEquals(7.5, receiver.doubleVal("no_such_field", 7.5))
+        assertEquals(emptyList<String>(), receiver.stringVals("no_such_field"))
+    }
 }

@@ -1,5 +1,7 @@
 package dev.brikk.chill.opensearch
 
+import dev.brikk.chill.opensearch.DocValuesCodec.docValues
+
 /**
  * The receiver every chill OpenSearch script lambda runs against, on both sides:
  * the client compiles lambdas typed `ChillSearchScript.() -> Any?`, and the server plugin
@@ -8,7 +10,8 @@ package dev.brikk.chill.opensearch
  * Successor of the old `EsKotlinScriptTemplate`, trimmed to the supported contexts
  * (score / filter / field):
  *  - [params] - the script params from the query
- *  - [doc]    - doc values for the current document (each field is a list of values)
+ *  - [doc]    - doc values for the current document (each field is a list of values). Note that
+ *               OpenSearch's map throws on `doc["unmapped"]`; the helpers below do not.
  *  - [_score] - the current document score (score context only; 0.0 elsewhere)
  *
  * The named helper methods are plain (non-inline) members so that script bytecode calls them
@@ -23,7 +26,8 @@ class ChillSearchScript(
 ) {
     // ---- doc value accessors ----
 
-    fun values(field: String): List<Any?> = doc[field] ?: emptyList()
+    /** Doc values of [field]; empty when the field is unmapped or has no value for this document. */
+    fun values(field: String): List<Any?> = doc.docValues(field)
 
     fun value(field: String): Any? = values(field).firstOrNull()
 

@@ -21,8 +21,9 @@ import java.time.ZonedDateTime
  *
  * Rules:
  *  - field name = `@SerialName` or the property name
- *  - missing/empty field: skipped -> the property default applies, or kotlinx throws
- *    `MissingFieldException` naming the field when there is no default
+ *  - missing/empty field (unmapped in the index, or mapped with no value for this document):
+ *    skipped -> the property default applies, or kotlinx throws `MissingFieldException` naming
+ *    the field when there is no default
  *  - numeric doc value into any numeric property: `Number` conversion, silently
  *  - any other type mismatch: loud `SerializationException` with field, expected, and actual
  *  - date doc values bind to [ZonedDateTime] only (mark the property `@Contextual`);
@@ -34,6 +35,16 @@ object DocValuesCodec {
 
     fun <T> decode(deserializer: DeserializationStrategy<T>, doc: Map<String, List<Any?>>): T =
         deserializer.deserialize(DocValuesDecoder(doc))
+
+    /**
+     * The doc values of [field], or an empty list when the field is absent. OpenSearch's
+     * `LeafDocLookup.get` throws for a field that is not in the index mapping (only `containsKey`
+     * is safe to probe), so every lookup goes through here: an unmapped field and a mapped field
+     * with no value for this document both read as "no values", which is what lets a property
+     * default apply on the server exactly as it does when the class is constructed locally.
+     */
+    fun Map<String, List<Any?>>.docValues(field: String): List<Any?> =
+        if (containsKey(field)) this[field] ?: emptyList() else emptyList()
 
     val serializersModule: SerializersModule = SerializersModule {
         contextual(ChillZonedDateTimeSerializer)
@@ -71,7 +82,7 @@ object DocValuesCodec {
         private var index = -1
 
         override fun fieldName(): String = rootDescriptor?.getElementName(index) ?: "<root>"
-        private fun values(): List<Any?> = doc[fieldName()] ?: emptyList()
+        private fun values(): List<Any?> = doc.docValues(fieldName())
         override fun rawValue(): Any? = values().firstOrNull()
 
         override fun decodeElementIndex(descriptor: SerialDescriptor): Int {
@@ -81,7 +92,7 @@ object DocValuesCodec {
                 val name = descriptor.getElementName(index)
                 // missing/empty fields are skipped: kotlinx applies the property default, or
                 // raises MissingFieldException for required properties
-                if (!doc[name].isNullOrEmpty()) return index
+                if (doc.docValues(name).isNotEmpty()) return index
             }
         }
 
