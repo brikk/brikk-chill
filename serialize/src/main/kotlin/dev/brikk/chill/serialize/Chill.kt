@@ -2,6 +2,7 @@ package dev.brikk.chill.serialize
 
 import dev.brikk.chill.policy.ALL_CLASS_ACCESS_TYPES
 import dev.brikk.chill.quarantine.ClassAllowanceDetector
+import dev.brikk.chill.quarantine.DebugInfoStripper
 import dev.brikk.chill.quarantine.LambdaVerificationManifest
 import dev.brikk.chill.quarantine.NamedClassBytes
 import dev.brikk.chill.quarantine.Quarantine
@@ -17,6 +18,10 @@ import java.io.ObjectOutputStream
 import java.io.ObjectStreamClass
 import java.io.OutputStream
 import java.util.Base64
+import java.util.zip.Deflater
+import java.util.zip.DeflaterOutputStream
+import java.util.zip.Inflater
+import java.util.zip.InflaterInputStream
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlin.reflect.KClass
@@ -55,6 +60,12 @@ class Chill(
      * otherwise policy-allowed classes.
      */
     val thawLimits: ThawLimits = ThawLimits(),
+    /**
+     * Strip debug attributes (line numbers, local variable names, source file) from shipped class
+     * bytes. Execution, verification, and `serialVersionUID` are unaffected; payloads shrink
+     * substantially; stack traces from thawed code lose line numbers.
+     */
+    val stripDebugInfo: Boolean = true,
 ) {
 
     data class ThawLimits(
@@ -72,7 +83,56 @@ class Chill(
         private const val MAX_SHIPPED_CLASSES = 1024
         private const val MAX_SLOTS = 16
 
+        /**
+         * Cap on the inflated envelope. Inputs are already bounded by the transport (OpenSearch
+         * limits inline scripts to `script.max_size_in_bytes`, 64 KiB by default) and deflate
+         * expands at most ~1000:1, so this only guards a deliberately crafted bomb.
+         */
+        const val MAX_ENVELOPE_BYTES: Int = 32 * 1024 * 1024
+
         fun isPrefixedBase64(scriptSource: String): Boolean = scriptSource.startsWith(BINARY_PREFIX)
+
+        /** Envelope bytes -> `chill~~<base64(deflate(bytes))>`. */
+        internal fun encodeEnvelope(content: ByteArray): String {
+            val deflater = Deflater(Deflater.BEST_COMPRESSION)
+            val compressed = try {
+                ByteArrayOutputStream(content.size / 2).also { out ->
+                    DeflaterOutputStream(out, deflater).use { it.write(content) }
+                }.toByteArray()
+            } finally {
+                deflater.end()
+            }
+            return BINARY_PREFIX + Base64.getEncoder().encodeToString(compressed)
+        }
+
+        /** Inverse of [encodeEnvelope], bounded by [MAX_ENVELOPE_BYTES]. */
+        internal fun decodeEnvelope(scriptSource: String): ByteArray {
+            if (!isPrefixedBase64(scriptSource)) throw ClassSerDesException("Script is not valid encoded classes")
+            val compressed = Base64.getDecoder().decode(scriptSource.substring(BINARY_PREFIX.length))
+            val inflater = Inflater()
+            try {
+                InflaterInputStream(ByteArrayInputStream(compressed), inflater).use { input ->
+                    val out = ByteArrayOutputStream(compressed.size * 4)
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        if (out.size() + read > MAX_ENVELOPE_BYTES) {
+                            throw ClassSerDesException("Serialized payload inflates beyond $MAX_ENVELOPE_BYTES bytes")
+                        }
+                        out.write(buffer, 0, read)
+                    }
+                    return out.toByteArray()
+                }
+            } catch (ex: java.util.zip.ZipException) {
+                throw ClassSerDesException(
+                    "Serialized payload is not a compressed chill envelope, be sure client and server have matching versions",
+                    ex,
+                )
+            } finally {
+                inflater.end()
+            }
+        }
 
         private val manifestByLoader = java.util.Collections.synchronizedMap(
             java.util.WeakHashMap<ClassLoader, Map<String, LambdaVerificationManifest.Entry>>(),
@@ -148,10 +208,8 @@ class Chill(
         scriptSource: String,
         additionalPolicies: Set<String> = emptySet()
     ): SerializedLambdaClassData {
-        if (!isPrefixedBase64(scriptSource)) throw ClassSerDesException("Script is not valid encoded classes")
         try {
-            val rawData = scriptSource.substring(BINARY_PREFIX.length)
-            val decodedBinary = Base64.getDecoder().decode(rawData)
+            val decodedBinary = decodeEnvelope(scriptSource)
             val content = DataInputStream(ByteArrayInputStream(decodedBinary)).use { stream ->
                 val markerSig = stream.readString()
                 val markerVer = stream.readInt()
@@ -348,7 +406,7 @@ class Chill(
         val preVerified = classesToVerifyAndShipAsBytes.size == 1 &&
                 isBuildTimeVerified(serClassBytes, serClass.classLoader)
 
-        val actualClassesToShipAsBytes = if (preVerified) {
+        val verifiedClassesToShip = if (preVerified) {
             verifier.filterKnownClasses(classesToVerifyAndShipAsBytes, additionalPolicies)
         } else {
             val verification = verifier.verifyClassAgainstPolicies(classesToVerifyAndShipAsBytes, additionalPolicies)
@@ -360,6 +418,9 @@ class Chill(
             }
             verification.filteredClasses
         }
+        // verified as compiled; shipped without debug attributes (the receiver re-verifies what it gets)
+        val actualClassesToShipAsBytes =
+            if (stripDebugInfo) verifiedClassesToShip.map(DebugInfoStripper::strip) else verifiedClassesToShip
 
         val content = ByteArrayOutputStream().apply {
             DataOutputStream(this).use { stream ->
@@ -400,8 +461,7 @@ class Chill(
             }
         }.toByteArray()
 
-        val encodedBinary = Base64.getEncoder().encodeToString(content)
-        return BINARY_PREFIX + encodedBinary
+        return encodeEnvelope(content)
     }
 
     inline fun <reified R : Any, reified T : Any> instantiateSerializedLambdaSafely(

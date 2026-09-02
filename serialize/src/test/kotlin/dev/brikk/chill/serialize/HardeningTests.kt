@@ -10,7 +10,6 @@ import org.junit.jupiter.api.assertThrows
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.InvalidClassException
-import java.util.Base64
 
 class HardeningTests {
 
@@ -39,7 +38,7 @@ class HardeningTests {
                 stream.write(ByteArray(16)) // but almost no actual data
             }
         }.toByteArray()
-        val payload = "chill~~" + Base64.getEncoder().encodeToString(content)
+        val payload = Chill.encodeEnvelope(content)
 
         val ex = assertThrows<Chill.ClassSerDesException> {
             Chill(quarantine()).deserFromPrefixedBase64<MyReceiver, Any>(payload)
@@ -60,7 +59,7 @@ class HardeningTests {
                 stream.writeInt(Int.MAX_VALUE) // forged class count
             }
         }.toByteArray()
-        val payload = "chill~~" + Base64.getEncoder().encodeToString(content)
+        val payload = Chill.encodeEnvelope(content)
 
         val ex = assertThrows<Chill.ClassSerDesException> {
             Chill(quarantine()).deserFromPrefixedBase64<MyReceiver, Any>(payload)

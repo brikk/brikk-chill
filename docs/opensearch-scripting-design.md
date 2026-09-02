@@ -48,6 +48,10 @@ Misuse is unrepresentable:
 Both kinds produce the **identical source string** for the same lambda: `template.withParams(x)`
 and `script(paramOf(x), ...)` with the same lambda hit the same server-side compile cache entry.
 
+The source string is `chill~~` + base64 of a deflated envelope; shipped class bytes carry no debug
+attributes. OpenSearch caps inline and stored scripts at `script.max_size_in_bytes` (64 KiB by
+default); the representative two-class bound script is ~10 KB.
+
 ### Types
 
 ```kotlin

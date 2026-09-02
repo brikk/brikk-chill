@@ -29,30 +29,25 @@ Options:
 - Ban or limit `kotlin.text.Regex` (or wrap with a step-limited matcher).
 - At minimum: document as a loud, known limitation.
 
-### [ ] 2. Payload size vs `script.max_size_in_bytes`
+### [x] 2. Payload size vs `script.max_size_in_bytes`
 
-Measured: the bound-score example (`RankParams` + `ArticleDoc` + lambda) freezes to **44,959
-bytes**. OpenSearch's default `script.max_size_in_bytes` is 65,535 and applies to inline chill
-sources (`ScriptService.java:478`) and stored scripts (`:554`).
+Was: the bound-score example (`RankParams` + `ArticleDoc` + lambda) froze to **44,959 bytes**
+against OpenSearch's default 65,535-byte limit on inline and stored scripts. Two small classes
+used 69% of the budget, mostly compiler-generated `$serializer` code plus debug attributes.
 
-Breakdown of shipped classes (with debug info):
+Done:
+- Envelope is deflated (best compression) before base64; inflate is capped at 32 MiB
+  (`Chill.MAX_ENVELOPE_BYTES`) so a crafted 64 KB input cannot force a huge allocation.
+- Shipped class bytes are debug-stripped (`DebugInfoStripper`, `ClassReader.SKIP_DEBUG`) after
+  client-side verification; `Chill(stripDebugInfo = false)` restores line numbers in thawed
+  stack traces at a ~10% size cost. Tested: serialVersionUID and behaviour unchanged.
+- Measured after: bound 10,351 (-77%), doc-only 7,411, plain receiver 1,299. Regression test
+  pins the bound example under 16,000 bytes.
 
-| class | bytes |
-|---|---|
-| `RankParams` | 6,820 |
-| `RankParams$$serializer` | 6,134 |
-| `RankParams$Companion` | 1,514 |
-| `ArticleDoc` | 7,872 |
-| `ArticleDoc$$serializer` | 6,352 |
-| `ArticleDoc$Companion` | 1,514 |
-| lambda | 2,621 |
-
-Two small classes already use 69% of the budget. Fixes, in order of payoff:
-- gzip the envelope before base64 (class bytes compress 3-4x)
-- strip debug attributes when shipping (`ClassWriter` copy with `ClassReader.SKIP_DEBUG`)
-- stop shipping `Companion`: resolve `<Class>$$serializer.INSTANCE` directly server-side instead
-  of `serializer(clazz)` (which is what needs the companion)
-- document the setting for users who still exceed it
+Decided against: dropping `Companion` from the ship set. The class's `<clinit>` instantiates it,
+so removal means rewriting user bytecode, for ~1.2 KB uncompressed per class (a few hundred
+bytes compressed). Revisit only if payloads grow again. `kotlin.Metadata` is the other large
+attribute; stripping it is riskier (kotlinx reflection-lite may consult it) and was not attempted.
 
 ### [ ] 3. Unmapped doc fields throw instead of defaulting
 

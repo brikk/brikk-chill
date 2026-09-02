@@ -256,6 +256,31 @@ class ChillScriptEngineTests {
         assertTrue(script.source != script2.source)
     }
 
+    /**
+     * OpenSearch rejects inline and stored scripts above `script.max_size_in_bytes` (65,535 by
+     * default). Two small bound classes ship six compiler-generated classes, which uncompressed
+     * with debug info measured ~45 KB; the envelope is deflated and debug-stripped to stay far
+     * from the limit. The ceiling leaves headroom for compiler drift but fails on a regression to
+     * either an uncompressed envelope or unstripped classes.
+     */
+    @Test
+    fun representativeBoundPayloadStaysWellUnderTheOpenSearchScriptSizeLimit() {
+        val ranking = ChillOpenSearch.boundScore(
+            paramType<RankParams>(),
+            docType<ArticleDoc>(),
+            scoreType(),
+        ) @ChillLambda { p, d, score -> score * d.reads * (1.0 + (p.topicWeights[d.topicId.toString()] ?: 0.0)) }
+
+        val size = ranking.source.toByteArray(Charsets.UTF_8).size
+        assertTrue(size < 16_000) { "bound payload is $size bytes; expected < 16000 (OpenSearch default limit is 65535)" }
+
+        // and it still compiles and runs on the engine side after stripping + compression
+        val compiled = engine.compileChill("size", ranking.source, Double::class) { (it as Number).toDouble() }
+        val ready = ranking.withParams(RankParams(nowEpochSec = 1, topicWeights = mapOf("9" to 2.0)))
+        val remote = compiled.execute(compiled.instantiate(), ChillSearchScript(ready.params, sampleDoc, 2.0), compiled.decodeParams(ready.params), sampleDoc, null, 2.0)
+        assertEquals(2.0 * 120.0 * 3.0, remote)
+    }
+
     @Test
     fun tamperedPayloadIsRejected() {
         val script = ChillOpenSearch.script(@ChillLambda { 42 })
