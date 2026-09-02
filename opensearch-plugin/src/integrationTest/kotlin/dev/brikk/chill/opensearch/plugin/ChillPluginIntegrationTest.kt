@@ -7,6 +7,7 @@ import dev.brikk.chill.opensearch.client.toScript
 import dev.brikk.chill.opensearch.docType
 import dev.brikk.chill.opensearch.paramOf
 import dev.brikk.chill.opensearch.paramType
+import dev.brikk.chill.opensearch.scoreType
 import dev.brikk.chill.opensearch.storedChillScript
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
@@ -98,13 +99,63 @@ class ChillPluginIntegrationTest {
     private val index = "articles"
 
     // docs designed so the expected math is easy to compute in the test
-    private data class Fixture(val id: String, val popularity: Double, val reads: Double, val words: Double, val featured: Long, val authorId: Long, val topicId: Long, val ageHours: Long, val tags: List<String>)
+    private data class Fixture(
+        val id: String,
+        val popularity: Double,
+        val reads: Double,
+        val words: Double,
+        val featured: Long,
+        val authorId: Long,
+        val topicId: Long,
+        val ageHours: Long,
+        val tags: List<String>
+    )
 
     private val fixtures = listOf(
-        Fixture("fresh-weighted-topic", popularity = 10.0, reads = 900.0, words = 1200.0, featured = 1, authorId = 1, topicId = 9, ageHours = 24, tags = listOf("howto")),
-        Fixture("old-weighted-topic", popularity = 50.0, reads = 8000.0, words = 2500.0, featured = 1, authorId = 2, topicId = 9, ageHours = 24 * 90, tags = listOf("howto", "evergreen")),
-        Fixture("fresh-other-topic", popularity = 5.0, reads = 300.0, words = 700.0, featured = 0, authorId = 3, topicId = 5, ageHours = 12, tags = listOf("misc")),
-        Fixture("penalized-author", popularity = 80.0, reads = 9000.0, words = 900.0, featured = 1, authorId = 777, topicId = 5, ageHours = 24, tags = listOf("listicle")),
+        Fixture(
+            "fresh-weighted-topic",
+            popularity = 10.0,
+            reads = 900.0,
+            words = 1200.0,
+            featured = 1,
+            authorId = 1,
+            topicId = 9,
+            ageHours = 24,
+            tags = listOf("howto")
+        ),
+        Fixture(
+            "old-weighted-topic",
+            popularity = 50.0,
+            reads = 8000.0,
+            words = 2500.0,
+            featured = 1,
+            authorId = 2,
+            topicId = 9,
+            ageHours = 24 * 90,
+            tags = listOf("howto", "evergreen")
+        ),
+        Fixture(
+            "fresh-other-topic",
+            popularity = 5.0,
+            reads = 300.0,
+            words = 700.0,
+            featured = 0,
+            authorId = 3,
+            topicId = 5,
+            ageHours = 12,
+            tags = listOf("misc")
+        ),
+        Fixture(
+            "penalized-author",
+            popularity = 80.0,
+            reads = 9000.0,
+            words = 900.0,
+            featured = 1,
+            authorId = 777,
+            topicId = 5,
+            ageHours = 24,
+            tags = listOf("listicle")
+        ),
     )
 
     @BeforeAll
@@ -176,15 +227,16 @@ class ChillPluginIntegrationTest {
         return freshness * topicBoost * authorFactor * lengthGate * featuredFactor
     }
 
-    private val rankingTemplate = ChillOpenSearch.script(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { p, d ->
-        val ageDays = max(1.0 / 24, (p.nowEpochSec - d.postedAt.toEpochSecond()) / 86400.0)
-        val freshness = exp(-ageDays / 30.0)
-        val topicBoost = 1.0 + (p.topicWeights[d.topicId.toString()] ?: 0.0)
-        val authorFactor = max(0.05, 1.0 - (p.authorPenalties[d.authorId.toString()] ?: 0.0))
-        val lengthGate = if (d.words < 800) 0.7 else 1.0
-        val featuredFactor = if (d.featured == 1L) 1.15 else 1.0
-        freshness * topicBoost * authorFactor * lengthGate * featuredFactor
-    }
+    private val rankingTemplate =
+        ChillOpenSearch.script(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { p, d ->
+            val ageDays = max(1.0 / 24, (p.nowEpochSec - d.postedAt.toEpochSecond()) / 86400.0)
+            val freshness = exp(-ageDays / 30.0)
+            val topicBoost = 1.0 + (p.topicWeights[d.topicId.toString()] ?: 0.0)
+            val authorFactor = max(0.05, 1.0 - (p.authorPenalties[d.authorId.toString()] ?: 0.0))
+            val lengthGate = if (d.words < 800) 0.7 else 1.0
+            val featuredFactor = if (d.featured == 1L) 1.15 else 1.0
+            freshness * topicBoost * authorFactor * lengthGate * featuredFactor
+        }
 
     @Test
     fun readyScriptScoresMatchTheSameMathComputedLocally() {
@@ -213,8 +265,20 @@ class ChillPluginIntegrationTest {
     @Test
     fun templateWithDifferentParamsReordersResults() {
         val penalties = mapOf("777" to 0.8)
-        val weightNine = rankingTemplate.withParams(RankParams(now.toEpochSecond(), topicWeights = mapOf("9" to 5.0), authorPenalties = penalties))
-        val weightFive = rankingTemplate.withParams(RankParams(now.toEpochSecond(), topicWeights = mapOf("5" to 5.0), authorPenalties = penalties))
+        val weightNine = rankingTemplate.withParams(
+            RankParams(
+                now.toEpochSecond(),
+                topicWeights = mapOf("9" to 5.0),
+                authorPenalties = penalties
+            )
+        )
+        val weightFive = rankingTemplate.withParams(
+            RankParams(
+                now.toEpochSecond(),
+                topicWeights = mapOf("5" to 5.0),
+                authorPenalties = penalties
+            )
+        )
 
         assertEquals(weightNine.source, weightFive.source) { "params must never change the source" }
 
@@ -240,7 +304,12 @@ class ChillPluginIntegrationTest {
         // stored payload is accepted into cluster state but rejected at first USE (compile),
         // before anything executes
         val permissive = setOf(
-            PolicyAllowance.ClassLevel.ClassMethodAccess("java.lang.System", "*", "*", setOf(AccessTypes.call_Class_Static_Method)),
+            PolicyAllowance.ClassLevel.ClassMethodAccess(
+                "java.lang.System",
+                "*",
+                "*",
+                setOf(AccessTypes.call_Class_Static_Method)
+            ),
         ).flatMap { it.asPolicyStrings() }.toSet()
         val hostileSource = Chill(ChillOpenSearch.quarantine).serializeLambdaToBase64(
             ChillSearchScript::class, Any::class, permissive,
@@ -249,8 +318,10 @@ class ChillPluginIntegrationTest {
         client.putScript { req ->
             req.id("chill-hostile").script { s -> s.lang { l -> l.custom("chill") }.source(hostileSource) }
         }
-        val hostileRef = org.opensearch.client.opensearch._types.Script.of { s -> s.stored { st -> st.id("chill-hostile") } }
-        val ex = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(hostileRef) }
+        val hostileRef =
+            org.opensearch.client.opensearch._types.Script.of { s -> s.stored { st -> st.id("chill-hostile") } }
+        val ex =
+            assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(hostileRef) }
         assertTrue("System.getenv" in errorText(ex)) { "got: ${errorText(ex)}" }
     }
 
@@ -259,7 +330,8 @@ class ChillPluginIntegrationTest {
         fun walk(cause: org.opensearch.client.opensearch._types.ErrorCause?) {
             if (cause == null) return
             sb.append(cause.type()).append(": ").append(cause.reason()).append('\n')
-            cause.metadata().forEach { (k, v) -> sb.append("  ").append(k).append(" = ").append(v.toString()).append('\n') }
+            cause.metadata()
+                .forEach { (k, v) -> sb.append("  ").append(k).append(" = ").append(v.toString()).append('\n') }
             cause.rootCause().forEach { walk(it) }
             walk(cause.causedBy())
             cause.suppressed().forEach { walk(it) }
@@ -336,7 +408,12 @@ class ChillPluginIntegrationTest {
     fun rejectionsSurfaceCleanlyOverHttp() {
         // violating inline script
         val permissive = setOf(
-            PolicyAllowance.ClassLevel.ClassMethodAccess("java.lang.System", "*", "*", setOf(AccessTypes.call_Class_Static_Method)),
+            PolicyAllowance.ClassLevel.ClassMethodAccess(
+                "java.lang.System",
+                "*",
+                "*",
+                setOf(AccessTypes.call_Class_Static_Method)
+            ),
         ).flatMap { it.asPolicyStrings() }.toSet()
         val hostile = Chill(ChillOpenSearch.quarantine).serializeLambdaToBase64(
             ChillSearchScript::class, Any::class, permissive,
@@ -345,27 +422,54 @@ class ChillPluginIntegrationTest {
         val hostileScript = org.opensearch.client.opensearch._types.Script.of { s ->
             s.inline { i -> i.lang { l -> l.custom("chill") }.source(hostile) }
         }
-        val ex1 = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(hostileScript) }
+        val ex1 =
+            assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(hostileScript) }
         assertTrue("System.getenv" in errorText(ex1)) { "got: ${errorText(ex1)}" }
 
         // non-chill source
         val garbage = org.opensearch.client.opensearch._types.Script.of { s ->
             s.inline { i -> i.lang { l -> l.custom("chill") }.source("doc['read_count'].value * 2") }
         }
-        val ex2 = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(garbage) }
+        val ex2 =
+            assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(garbage) }
         assertTrue("chill" in errorText(ex2)) { "got: ${errorText(ex2)}" }
 
         // missing required doc field -> loud, named
         val needy = ChillOpenSearch.script(docType<NeedsMissingField>()) @ChillLambda { d -> d.required.length }
-        val ex3 = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(needy.toScript()) }
+        val ex3 =
+            assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(needy.toScript()) }
         assertTrue("no_such_field" in errorText(ex3)) { "got: ${errorText(ex3)}" }
     }
 
     @Test
-    fun scoreAccessFlowsThroughScriptScore() {
-        // _score of the underlying query is 1.0 for match_all; multiplying by it must not zero out
-        val ready = ChillOpenSearch.script(docType<ArticleDoc>()) @ChillLambda { d -> _score * d.reads }
-        val scores = scriptScoreSearch(ready.toScript()).hits().hits().associate { it.id() to it.score()!! }
-        assertEquals(900.0, scores.getValue("fresh-weighted-topic"), 1e-3)
+    fun sameBoundScoreRunsLocallyAndInOpenSearch() {
+        val ranking = ChillOpenSearch.boundScore(
+            paramOf(rankParams),
+            docType<ArticleDoc>(),
+            scoreType(),
+        ) @ChillLambda { p, d, score ->
+            score * d.reads * (1.0 + (p.topicWeights[d.topicId.toString()] ?: 0.0))
+        }
+
+        // These are documents the client already has in hand. The match_all base score is 1.0.
+        val localScores = fixtures.associate { fixture ->
+            val document = ArticleDoc(
+                fixture.popularity,
+                fixture.reads,
+                fixture.words,
+                fixture.featured,
+                fixture.authorId,
+                fixture.topicId,
+                now.minusHours(fixture.ageHours),
+            )
+            fixture.id to ranking.evaluate(document, 1.0)
+        }
+
+        val remoteScores = scriptScoreSearch(ranking.toScript()).hits().hits().associate { it.id() to it.score()!! }
+
+        assertEquals(localScores.keys, remoteScores.keys)
+        localScores.forEach { (id, localScore) ->
+            assertEquals(localScore, remoteScores.getValue(id), 1e-3) { "local/remote score mismatch for $id" }
+        }
     }
 }

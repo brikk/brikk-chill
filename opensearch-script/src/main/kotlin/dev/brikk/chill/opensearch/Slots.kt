@@ -2,6 +2,7 @@ package dev.brikk.chill.opensearch
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.serializer
+import kotlin.jvm.javaObjectType
 
 /**
  * A bound input slot of a chill script lambda. The slot you pass to [ChillOpenSearch.script]
@@ -11,6 +12,7 @@ import kotlinx.serialization.serializer
  *  - [paramType]   params type only        -> reusable [ChillScriptTemplate]
  *  - [docType]     doc values binding      (decoded per document)
  *  - [sourceType]  `_source` binding       (decoded per document; forces source loading - costly)
+ *  - [scoreType]   base query score         (bound as the final lambda parameter)
  *
  * Slot values are never part of the frozen payload: the same lambda always freezes to the same
  * source string, so OpenSearch's compile cache sees one script regardless of param values.
@@ -20,6 +22,7 @@ sealed class ChillSlot(val kind: String, val boundClass: Class<*>) {
         const val KIND_PARAMS = "params"
         const val KIND_DOC = "doc"
         const val KIND_SOURCE = "source"
+        const val KIND_SCORE = "score"
     }
 }
 
@@ -38,10 +41,15 @@ class DocSlot<D : Any> @PublishedApi internal constructor(boundClass: Class<*>) 
 
 class SourceSlot<S : Any> @PublishedApi internal constructor(boundClass: Class<*>) : ChillSlot(KIND_SOURCE, boundClass)
 
-inline fun <reified P : Any> paramOf(value: P): ParamValueSlot<P> = ParamValueSlot(P::class.java, value, serializer<P>())
+class ScoreSlot @PublishedApi internal constructor() : ChillSlot(KIND_SCORE, Double::class.javaObjectType)
+
+inline fun <reified P : Any> paramOf(value: P): ParamValueSlot<P> =
+    ParamValueSlot(P::class.java, value, serializer<P>())
 
 inline fun <reified P : Any> paramType(): ParamTypeSlot<P> = ParamTypeSlot(P::class.java, serializer<P>())
 
 inline fun <reified D : Any> docType(): DocSlot<D> = DocSlot(D::class.java)
 
 inline fun <reified S : Any> sourceType(): SourceSlot<S> = SourceSlot(S::class.java)
+
+fun scoreType(): ScoreSlot = ScoreSlot()

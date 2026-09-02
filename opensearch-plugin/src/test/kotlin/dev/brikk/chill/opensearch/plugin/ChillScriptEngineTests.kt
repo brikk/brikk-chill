@@ -5,6 +5,7 @@ import dev.brikk.chill.opensearch.ChillSearchScript
 import dev.brikk.chill.opensearch.docType
 import dev.brikk.chill.opensearch.paramOf
 import dev.brikk.chill.opensearch.paramType
+import dev.brikk.chill.opensearch.scoreType
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.serialize.Chill
@@ -104,7 +105,12 @@ class ChillScriptEngineTests {
     fun policyViolationIsRejectedServerSideWithViolationDetails() {
         // freeze with a deliberately permissive client so the SERVER side does the rejecting
         val permissive = setOf(
-            PolicyAllowance.ClassLevel.ClassMethodAccess("java.lang.System", "*", "*", setOf(AccessTypes.call_Class_Static_Method)),
+            PolicyAllowance.ClassLevel.ClassMethodAccess(
+                "java.lang.System",
+                "*",
+                "*",
+                setOf(AccessTypes.call_Class_Static_Method)
+            ),
         ).flatMap { it.asPolicyStrings() }.toSet()
 
         val hostilePayload = Chill(ChillOpenSearch.quarantine).serializeLambdaToBase64(
@@ -158,6 +164,68 @@ class ChillScriptEngineTests {
 
         assertEquals(240.0, compiled.execute(fn, receiver, compiled.decodeParams(readyA.params), sampleDoc, null))
         assertEquals(600.0, compiled.execute(fn, receiver, compiled.decodeParams(readyB.params), sampleDoc, null))
+    }
+
+    @Test
+    fun boundScoreExecutesLocallyAndThroughCompiledSlots() {
+        val ranking = ChillOpenSearch.boundScore(
+            paramType<RankParams>(),
+            docType<ArticleDoc>(),
+            scoreType(),
+        ) @ChillLambda { p, d, score -> d.reads * (p.topicWeights[d.topicId.toString()] ?: 1.0) + score }
+        val params = RankParams(nowEpochSec = 1, topicWeights = mapOf("9" to 2.0))
+        val localDoc = ArticleDoc(reads = 120.0, topicId = 9, postedAt = docDate)
+        val ready = ranking.withParams(params)
+
+        val compiled = engine.compileChill("bound", ranking.source, Double::class) { result ->
+            (result as Number).toDouble()
+        }
+        val remote = compiled.execute(
+            compiled.instantiate(),
+            ChillSearchScript(ready.params, sampleDoc, 3.0),
+            compiled.decodeParams(ready.params),
+            sampleDoc,
+            null,
+            3.0,
+        )
+
+        assertEquals(243.0, ranking.evaluate(params, localDoc, 3.0))
+        assertEquals(243.0, remote)
+    }
+
+    @Test
+    fun explicitScoreSlotControlsNeedsScore() {
+        val withoutScore =
+            ChillOpenSearch.boundScore(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { _, d -> d.reads }
+        val withScore = ChillOpenSearch.boundScore(
+            paramType<RankParams>(),
+            docType<ArticleDoc>(),
+            scoreType(),
+        ) @ChillLambda { _, d, score -> d.reads + score }
+
+        val withoutFactory = engine.compile("bound-no-score", withoutScore.source, ScoreScript.CONTEXT, emptyMap())
+        val withFactory = engine.compile("bound-score", withScore.source, ScoreScript.CONTEXT, emptyMap())
+        val encodedParams = withoutScore.withParams(RankParams(nowEpochSec = 1)).params
+            .mapValues { (_, value) -> requireNotNull(value) }
+
+        assertFalse(withoutFactory.newFactory(encodedParams, null, null).needs_score())
+        assertTrue(withFactory.newFactory(encodedParams, null, null).needs_score())
+    }
+
+    @Test
+    fun explicitScoreSlotIsRejectedOutsideScoreContext() {
+        val withScore = ChillOpenSearch.boundScore(
+            paramType<RankParams>(),
+            docType<ArticleDoc>(),
+            scoreType(),
+        ) @ChillLambda { _, d, score -> d.reads + score }
+
+        assertThrows<ScriptException> {
+            engine.compile("score-as-filter", withScore.source, FilterScript.CONTEXT, emptyMap())
+        }
+        assertThrows<ScriptException> {
+            engine.compile("score-as-field", withScore.source, FieldScript.CONTEXT, emptyMap())
+        }
     }
 
     @Test

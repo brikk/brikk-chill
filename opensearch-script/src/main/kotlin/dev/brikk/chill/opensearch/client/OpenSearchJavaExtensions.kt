@@ -21,7 +21,7 @@ private fun Map<String, Any?>.toJsonData(): Map<String, JsonData> =
     entries.mapNotNull { (k, v) -> v?.let { k to JsonData.of(it) } }.toMap()
 
 /** Inline script form: lang "chill", frozen source, encoded params. */
-fun ChillScript.toScript(): Script = Script.of { s ->
+fun ChillScript<*>.toScript(): Script = Script.of { s ->
     s.inline { i ->
         i.lang(chillLanguage)
             .source(source)
@@ -37,7 +37,7 @@ fun ChillStoredScript.toScript(): Script = Script.of { s ->
 }
 
 /** Registers a reusable template as a stored script (`PUT _scripts/{id}`); verified at store time. */
-fun OpenSearchClient.putChillScript(id: String, template: ChillScriptTemplate<*>): PutScriptResponse =
+fun OpenSearchClient.putChillScript(id: String, template: ChillScriptTemplate<*, *>): PutScriptResponse =
     putScript { req ->
         req.id(id).script(
             StoredScript.of { s -> s.lang(chillLanguage).source(template.source) },

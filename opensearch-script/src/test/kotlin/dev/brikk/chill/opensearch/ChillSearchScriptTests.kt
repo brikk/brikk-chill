@@ -42,6 +42,9 @@ class ChillSearchScriptTests {
     @Serializable
     class Boost(val factor: Double)
 
+    @Serializable
+    class RankedDoc(val value: Double)
+
     @Test
     fun unboundScriptFreezes() {
         val script = ChillOpenSearch.script(@ChillLambda { doubleVal("price") * _score })
@@ -66,14 +69,37 @@ class ChillSearchScriptTests {
 
     @Test
     fun readyAndTemplatePathsProduceIdenticalSourceShape() {
-        // same lambda shape frozen twice via different param slot kinds: both are just the class
-        // bytes + captured state, so param values cannot appear in either source
-        val a = ChillOpenSearch.script(paramOf(Boost(1.0))) @ChillLambda { p -> p.factor }
-        val b = ChillOpenSearch.script(paramOf(Boost(99.0))) @ChillLambda { p -> p.factor }
-        // distinct lambdas -> distinct classes -> distinct sources, but identical *lengths* since
-        // only class names differ; the meaningful assertion is params-independence per lambda:
-        assertEquals(a.params["factor"], 1.0)
-        assertEquals(b.params["factor"], 99.0)
+        val block: ChillSearchScript.(Boost) -> Double = @ChillLambda { p -> p.factor }
+        val ready = ChillOpenSearch.script(paramOf(Boost(1.0)), block)
+        val template = ChillOpenSearch.script(paramType<Boost>(), block)
+
+        assertEquals(ready.source, template.source)
+        assertEquals(1.0, ready.params["factor"])
+    }
+
+    @Test
+    fun boundScoreEvaluatesTypedDocumentsLocally() {
+        val ranking = ChillOpenSearch.boundScore(paramType<Boost>(), docType<RankedDoc>()) @ChillLambda { p, d ->
+            p.factor * d.value
+        }
+
+        val local: Double = ranking.evaluate(Boost(2.5), RankedDoc(4.0))
+
+        assertEquals(10.0, local)
+        assertEquals(mapOf("factor" to 2.5), ranking.withParams(Boost(2.5)).params)
+    }
+
+    @Test
+    fun scoreTypeAddsAnExplicitFinalLocalParameter() {
+        val ranking = ChillOpenSearch.boundScore(
+            paramType<Boost>(),
+            docType<RankedDoc>(),
+            scoreType(),
+        ) @ChillLambda { p, d, score -> p.factor * d.value + score }
+
+        val local: Double = ranking.evaluate(Boost(2.0), RankedDoc(3.0), 1.5)
+
+        assertEquals(7.5, local)
     }
 
     @Test

@@ -63,6 +63,7 @@ class Chill(
         val maxArrayLength: Long = 64 * 1024,
         val maxStreamBytes: Long = 8L * 1024 * 1024,
     )
+
     companion object {
         private const val BINARY_PREFIX = "chill~~"
         private const val MARKER_SIG = "x9a0K1"
@@ -87,7 +88,7 @@ class Chill(
     fun isBuildTimeVerified(classBytes: NamedClassBytes, classLoader: ClassLoader): Boolean {
         val entry = manifestFor(classLoader)[classBytes.className] ?: return false
         return entry.policyFingerprint == verifier.policyFingerprint &&
-            entry.classSha256 == VerificationCache.keyFor(classBytes.bytes)
+                entry.classSha256 == VerificationCache.keyFor(classBytes.bytes)
     }
 
     private val macKey: ByteArray = hmacKey ?: SIG_SEED.toByteArray()
@@ -109,22 +110,46 @@ class Chill(
 
     class SerializedLambdaClassData(
         val className: String,
+        val receiverClassName: String,
+        val returnTypeClassName: String,
         val classes: List<NamedClassBytes>,
         val serializedLambda: ByteArray,
         val verification: Quarantine.VerifyResults,
         val slots: List<SlotDescriptor> = emptyList(),
     )
 
-    inline fun <reified R : Any, reified T : Any> deserFromPrefixedBase64(scriptSource: String, additionalPolicies: Set<String> = emptySet()): SerializedLambdaClassData {
+    inline fun <reified R : Any, reified T : Any> deserFromPrefixedBase64(
+        scriptSource: String,
+        additionalPolicies: Set<String> = emptySet()
+    ): SerializedLambdaClassData {
         return deserFromPrefixedBase64(R::class, T::class, scriptSource, additionalPolicies)
     }
 
-    fun <R : Any, T : Any> deserFromPrefixedBase64(lambdaReceiver: KClass<R>, lambdaReturnType: KClass<T>, scriptSource: String, additionalPolicies: Set<String> = emptySet()): SerializedLambdaClassData {
+    fun <R : Any, T : Any> deserFromPrefixedBase64(
+        lambdaReceiver: KClass<R>,
+        lambdaReturnType: KClass<T>,
+        scriptSource: String,
+        additionalPolicies: Set<String> = emptySet()
+    ): SerializedLambdaClassData {
+        val content = deserFunctionFromPrefixedBase64(scriptSource, additionalPolicies)
+        val receiverClassName = lambdaReceiver.java.name
+        val returnTypeClassName = lambdaReturnType.java.name
+        if (receiverClassName != content.receiverClassName) throw ClassSerDesException("Serialized lambda does not have expected receiver $receiverClassName, instead is ${content.receiverClassName}")
+        if (returnTypeClassName != content.returnTypeClassName) throw ClassSerDesException("Serialized lambda does not have expected return type $returnTypeClassName, instead is ${content.returnTypeClassName}")
+        return content
+    }
+
+    /**
+     * Verifies and reads a payload without prescribing its receiver and return type. Consumers must
+     * validate [SerializedLambdaClassData.receiverClassName] and [SerializedLambdaClassData.returnTypeClassName]
+     * before invocation.
+     */
+    fun deserFunctionFromPrefixedBase64(
+        scriptSource: String,
+        additionalPolicies: Set<String> = emptySet()
+    ): SerializedLambdaClassData {
         if (!isPrefixedBase64(scriptSource)) throw ClassSerDesException("Script is not valid encoded classes")
         try {
-            val receiverClassName = lambdaReceiver.java.name
-            val returnTypeClassName = lambdaReturnType.java.name
-
             val rawData = scriptSource.substring(BINARY_PREFIX.length)
             val decodedBinary = Base64.getDecoder().decode(rawData)
             val content = DataInputStream(ByteArrayInputStream(decodedBinary)).use { stream ->
@@ -175,15 +200,23 @@ class Chill(
                 if (!java.security.MessageDigest.isEqual(sentSig.toByteArray(), calcSig.toByteArray())) {
                     throw ClassSerDesException("Serialized classes signature is not valid")
                 }
-                if (receiverClassName != checkReceiverClassName) throw ClassSerDesException("Serialized lambda does not have expected receiver $receiverClassName, instead is $checkReceiverClassName")
-                if (returnTypeClassName != checkReturnTypeClassName) throw ClassSerDesException("Serialized lambda does not have expected return type $returnTypeClassName, instead is $checkReturnTypeClassName")
-
                 val verification = verifier.verifyClassAgainstPolicies(classes, additionalPolicies)
                 if (verification.failed) {
-                    throw ClassSerDerViolationsException("The Lambda classes have invalid references:  \n${verification.violationsAsString()}", verification.violations)
+                    throw ClassSerDerViolationsException(
+                        "The Lambda classes have invalid references:  \n${verification.violationsAsString()}",
+                        verification.violations
+                    )
                 }
 
-                SerializedLambdaClassData(className, verification.filteredClasses, serializedInstanceBytes, verification, slots)
+                SerializedLambdaClassData(
+                    className,
+                    checkReceiverClassName,
+                    checkReturnTypeClassName,
+                    verification.filteredClasses,
+                    serializedInstanceBytes,
+                    verification,
+                    slots,
+                )
             }
             return content
         } catch (ex: Throwable) {
@@ -211,7 +244,10 @@ class Chill(
         write(b)
     }
 
-    inline fun <reified R : Any, reified T : Any> serializeLambdaToBase64(additionalPolicies: Set<String> = emptySet(), noinline lambda: R.() -> T?): String {
+    inline fun <reified R : Any, reified T : Any> serializeLambdaToBase64(
+        additionalPolicies: Set<String> = emptySet(),
+        noinline lambda: R.() -> T?
+    ): String {
         return serializeLambdaToBase64(R::class, T::class, additionalPolicies, lambda = lambda)
     }
 
@@ -226,7 +262,14 @@ class Chill(
         additionalPolicies: Set<String> = emptySet(),
         shipClasses: List<Class<*>> = emptyList(),
         lambda: R.() -> T?,
-    ): String = serializeFunctionToBase64(lambdaReceiver, lambdaReturnType, emptyList(), additionalPolicies, shipClasses, lambda)
+    ): String = serializeFunctionToBase64(
+        lambdaReceiver,
+        lambdaReturnType,
+        emptyList(),
+        additionalPolicies,
+        shipClasses,
+        lambda
+    )
 
     /**
      * Freezes a parameterized lambda: a `R.(A0, A1, ...) -> T?` function whose bound argument
@@ -254,8 +297,9 @@ class Chill(
         val returnTypeClassName = lambdaReturnType.java.name
 
         val classScanResults = ClassAllowanceDetector.scanClassByteCodeForDesiredAllowances(listOf(serClassBytes))
-        val accessedClassNames = classScanResults.allowances.filter { allowance -> allowance.actions.any { it in ALL_CLASS_ACCESS_TYPES } }
-            .map { it.fqnTarget }.plus(className).toSet()
+        val accessedClassNames =
+            classScanResults.allowances.filter { allowance -> allowance.actions.any { it in ALL_CLASS_ACCESS_TYPES } }
+                .map { it.fqnTarget }.plus(className).toSet()
 
         // serialize the lambda instance while tracing every class in the captured object graph
         val classesIncludedInSerialization = mutableSetOf<Class<out Any>>()
@@ -268,21 +312,26 @@ class Chill(
 
         // take the starting lambda, and maybe its outer and inner classes but only if they are referenced
         val outerClasses = generateSequence<Class<*>>(serClass) { seed -> seed.declaringClass.takeIf { it != seed } } +
-            generateSequence<Class<*>>(serClass) { seed -> seed.enclosingClass.takeIf { it != seed } }
+                generateSequence<Class<*>>(serClass) { seed -> seed.enclosingClass.takeIf { it != seed } }
         val innerClasses = generateSequence<List<Class<*>>>(listOf<Class<*>>(serClass)) { seed ->
             val l = seed.map { c -> c.classes.filterNot { it == c }.toList() }.flatten()
             if (l.isEmpty()) null else l
         }.flatten()
-        val shipClassBytes = shipClasses.associate { it.name to NamedClassBytes.fromClassLoader(it.name, it.classLoader) }
+        val shipClassBytes =
+            shipClasses.associate { it.name to NamedClassBytes.fromClassLoader(it.name, it.classLoader) }
         val serClassRelatives = (innerClasses + outerClasses + serClass).map { it.name }.toSet() + shipClassBytes.keys
 
         val classesToVerifyAndShip =
             ((accessedClassNames + serializedClassNames + className).filter { it in serClassRelatives } + shipClassBytes.keys).distinct()
 
         val serializedClassesToVerifyAccess = serializedClassNames.filterNot { it in serClassRelatives }
-        val serializedClassVerificationResult = verifier.verifyClassNamesAgainstPolicies(serializedClassesToVerifyAccess, additionalPolicies)
+        val serializedClassVerificationResult =
+            verifier.verifyClassNamesAgainstPolicies(serializedClassesToVerifyAccess, additionalPolicies)
         if (serializedClassVerificationResult.failed) {
-            throw ClassSerDerViolationsException("The Lambda causes serialization of classes not in policy:  \n${serializedClassVerificationResult.violationsAsString()}", serializedClassVerificationResult.violations)
+            throw ClassSerDerViolationsException(
+                "The Lambda causes serialization of classes not in policy:  \n${serializedClassVerificationResult.violationsAsString()}",
+                serializedClassVerificationResult.violations
+            )
         }
 
         val classesToVerifyAndShipAsBytes = classesToVerifyAndShip.map { name ->
@@ -297,14 +346,17 @@ class Chill(
         // lambda ships alone (no relatives), the freeze-side verification can be skipped. The
         // receiving side never trusts this and always re-verifies.
         val preVerified = classesToVerifyAndShipAsBytes.size == 1 &&
-            isBuildTimeVerified(serClassBytes, serClass.classLoader)
+                isBuildTimeVerified(serClassBytes, serClass.classLoader)
 
         val actualClassesToShipAsBytes = if (preVerified) {
             verifier.filterKnownClasses(classesToVerifyAndShipAsBytes, additionalPolicies)
         } else {
             val verification = verifier.verifyClassAgainstPolicies(classesToVerifyAndShipAsBytes, additionalPolicies)
             if (verification.failed) {
-                throw ClassSerDerViolationsException("The Lambda classes have invalid references:  \n${verification.violationsAsString()}", verification.violations)
+                throw ClassSerDerViolationsException(
+                    "The Lambda classes have invalid references:  \n${verification.violationsAsString()}",
+                    verification.violations
+                )
             }
             verification.filteredClasses
         }
@@ -352,12 +404,31 @@ class Chill(
         return BINARY_PREFIX + encodedBinary
     }
 
-    inline fun <reified R : Any, reified T : Any> instantiateSerializedLambdaSafely(className: String, serBytes: ByteArray, classLoader: ClassLoader, additionalPolicies: Set<String> = emptySet()): R.() -> T? {
-        return instantiateSerializedLambdaSafely(R::class, T::class, className, serBytes, classLoader, additionalPolicies)
+    inline fun <reified R : Any, reified T : Any> instantiateSerializedLambdaSafely(
+        className: String,
+        serBytes: ByteArray,
+        classLoader: ClassLoader,
+        additionalPolicies: Set<String> = emptySet()
+    ): R.() -> T? {
+        return instantiateSerializedLambdaSafely(
+            R::class,
+            T::class,
+            className,
+            serBytes,
+            classLoader,
+            additionalPolicies
+        )
     }
 
     @Suppress("UNCHECKED_CAST", "unused")
-    fun <R : Any, T : Any> instantiateSerializedLambdaSafely(lambdaReceiver: KClass<R>, lambdaReturnType: KClass<T>, className: String, serBytes: ByteArray, classLoader: ClassLoader, additionalPolicies: Set<String> = emptySet()): R.() -> T? {
+    fun <R : Any, T : Any> instantiateSerializedLambdaSafely(
+        lambdaReceiver: KClass<R>,
+        lambdaReturnType: KClass<T>,
+        className: String,
+        serBytes: ByteArray,
+        classLoader: ClassLoader,
+        additionalPolicies: Set<String> = emptySet()
+    ): R.() -> T? {
         return instantiateSerializedFunctionSafely(className, serBytes, classLoader, additionalPolicies) as R.() -> T
     }
 
@@ -365,8 +436,19 @@ class Chill(
      * Deserializes a frozen lambda instance with the policy-gated stream; the caller invokes it
      * as the `kotlin.jvm.functions.FunctionN` matching its receiver + slot arity.
      */
-    fun instantiateSerializedFunctionSafely(className: String, serBytes: ByteArray, classLoader: ClassLoader, additionalPolicies: Set<String> = emptySet()): Any {
-        val tracer = RestrictUsedClassesObjectInputStream(verifier, additionalPolicies, classLoader, thawLimits, ByteArrayInputStream(serBytes))
+    fun instantiateSerializedFunctionSafely(
+        className: String,
+        serBytes: ByteArray,
+        classLoader: ClassLoader,
+        additionalPolicies: Set<String> = emptySet()
+    ): Any {
+        val tracer = RestrictUsedClassesObjectInputStream(
+            verifier,
+            additionalPolicies,
+            classLoader,
+            thawLimits,
+            ByteArrayInputStream(serBytes)
+        )
         return tracer.use { stream ->
             stream.readObject()
         }
@@ -416,13 +498,19 @@ class Chill(
             val temp = super.readClassDescriptor()
             val verify = verifier.verifyClassNamesAgainstPolicies(listOf(temp.name), additionalPolicies)
             if (verify.failed) {
-                throw ClassSerDerViolationsException("Invalid class ${temp.name} not allowed for lambda deserialization, violations: ${verify.violationsAsString()}", verify.violations)
+                throw ClassSerDerViolationsException(
+                    "Invalid class ${temp.name} not allowed for lambda deserialization, violations: ${verify.violationsAsString()}",
+                    verify.violations
+                )
             }
             return temp
         }
     }
 
-    private class TraceUsedClassesObjectOutputStream(output: OutputStream, val classes: MutableSet<Class<out Any>> = mutableSetOf()) : ObjectOutputStream(output) {
+    private class TraceUsedClassesObjectOutputStream(
+        output: OutputStream,
+        val classes: MutableSet<Class<out Any>> = mutableSetOf()
+    ) : ObjectOutputStream(output) {
         override fun annotateClass(cl: Class<*>) {
             classes.add(cl)
             super.annotateClass(cl)
@@ -440,5 +528,6 @@ class Chill(
     }
 
     open class ClassSerDesException(msg: String, cause: Throwable? = null) : Exception(msg, cause)
-    class ClassSerDerViolationsException(msg: String, val violations: Set<String>, cause: Throwable? = null) : ClassSerDesException(msg, cause)
+    class ClassSerDerViolationsException(msg: String, val violations: Set<String>, cause: Throwable? = null) :
+        ClassSerDesException(msg, cause)
 }

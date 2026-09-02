@@ -10,6 +10,7 @@ import dev.brikk.chill.quarantine.generator.jarfile.ScanMode
 import dev.brikk.chill.serialize.Chill
 import kotlinx.serialization.KSerializer
 import java.io.File
+import kotlin.reflect.KClass
 
 /**
  * The shared chill configuration for OpenSearch scripting, used identically on the freezing
@@ -20,6 +21,7 @@ object ChillOpenSearch {
     const val LANGUAGE = ChillScript.LANG
 
     private val receiverClassName = ChillSearchScript::class.java.name
+    private val boundReceiverClassName = ChillBoundScript::class.java.name
 
     /**
      * Allowances for the script receiver: instance methods and property reads, plus ref-only of
@@ -29,9 +31,23 @@ object ChillOpenSearch {
      */
     val receiverPolicies: Set<String> = listOf(
         PolicyAllowance.ClassLevel.ClassAccess(receiverClassName, setOf(AccessTypes.ref_Class_Instance)),
-        PolicyAllowance.ClassLevel.ClassMethodAccess(receiverClassName, "*", "*", setOf(AccessTypes.call_Class_Instance_Method, AccessTypes.call_Class_Static_Method)),
-        PolicyAllowance.ClassLevel.ClassPropertyAccess(receiverClassName, "*", "*", setOf(AccessTypes.read_Class_Instance_Property)),
-        PolicyAllowance.ClassLevel.ClassAccess(java.lang.reflect.Type::class.java.name, setOf(AccessTypes.ref_Class_Instance)),
+        PolicyAllowance.ClassLevel.ClassAccess(boundReceiverClassName, setOf(AccessTypes.ref_Class_Instance)),
+        PolicyAllowance.ClassLevel.ClassMethodAccess(
+            receiverClassName,
+            "*",
+            "*",
+            setOf(AccessTypes.call_Class_Instance_Method, AccessTypes.call_Class_Static_Method)
+        ),
+        PolicyAllowance.ClassLevel.ClassPropertyAccess(
+            receiverClassName,
+            "*",
+            "*",
+            setOf(AccessTypes.read_Class_Instance_Property)
+        ),
+        PolicyAllowance.ClassLevel.ClassAccess(
+            java.lang.reflect.Type::class.java.name,
+            setOf(AccessTypes.ref_Class_Instance)
+        ),
         PolicyAllowance.ClassLevel.ClassAccess(Class::class.java.name, setOf(AccessTypes.ref_Class)),
     ).toPolicy().toSet()
 
@@ -76,37 +92,59 @@ object ChillOpenSearch {
      * cannot invoke anything).
      */
     val serializationSupportPolicies: Set<String> = (
-        listOf(
-            PolicyAllowance.ClassLevel.ClassAccess("kotlin.jvm.internal.Reflection", setOf(AccessTypes.ref_Class_Static)),
-            PolicyAllowance.ClassLevel.ClassMethodAccess("kotlin.jvm.internal.Reflection", "*", "*", setOf(AccessTypes.call_Class_Static_Method)),
-            PolicyAllowance.ClassLevel.ClassAccess("kotlin.reflect.KClass", setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance)),
-            PolicyAllowance.ClassLevel.ClassAccess(java.time.ZonedDateTime::class.java.name, setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance)),
-        ) +
-            // kotlin annotations stamped onto generated serializer/companion classes: pure
-            // annotation type references, zero capability
             listOf(
-                "kotlin.jvm.JvmStatic",
-                "kotlin.jvm.JvmField",
-                "kotlin.Deprecated",
-                "kotlin.DeprecationLevel",
-                "kotlin.ReplaceWith",
-            ).map { PolicyAllowance.ClassLevel.ClassAccess(it, setOf(AccessTypes.ref_Class)) } +
-            // kotlinx generates lazily-cached descriptors: enum constant reads only
-            listOf(
-                PolicyAllowance.ClassLevel.ClassAccess("kotlin.LazyThreadSafetyMode", setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance, AccessTypes.ref_Class_Static)),
+                PolicyAllowance.ClassLevel.ClassAccess(
+                    "kotlin.jvm.internal.Reflection",
+                    setOf(AccessTypes.ref_Class_Static)
+                ),
+                PolicyAllowance.ClassLevel.ClassMethodAccess(
+                    "kotlin.jvm.internal.Reflection",
+                    "*",
+                    "*",
+                    setOf(AccessTypes.call_Class_Static_Method)
+                ),
+                PolicyAllowance.ClassLevel.ClassAccess(
+                    "kotlin.reflect.KClass",
+                    setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance)
+                ),
+                PolicyAllowance.ClassLevel.ClassAccess(
+                    java.time.ZonedDateTime::class.java.name,
+                    setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance)
+                ),
             ) +
-            listOf("SYNCHRONIZED", "PUBLICATION", "NONE").map {
-                PolicyAllowance.ClassLevel.ClassFieldAccess("kotlin.LazyThreadSafetyMode", it, "Lkotlin/LazyThreadSafetyMode;", setOf(AccessTypes.read_Class_Static_Field))
-            }
-        ).toPolicy().toSet()
+                    // kotlin annotations stamped onto generated serializer/companion classes: pure
+                    // annotation type references, zero capability
+                    listOf(
+                        "kotlin.jvm.JvmStatic",
+                        "kotlin.jvm.JvmField",
+                        "kotlin.Deprecated",
+                        "kotlin.DeprecationLevel",
+                        "kotlin.ReplaceWith",
+                    ).map { PolicyAllowance.ClassLevel.ClassAccess(it, setOf(AccessTypes.ref_Class)) } +
+                    // kotlinx generates lazily-cached descriptors: enum constant reads only
+                    listOf(
+                        PolicyAllowance.ClassLevel.ClassAccess(
+                            "kotlin.LazyThreadSafetyMode",
+                            setOf(AccessTypes.ref_Class, AccessTypes.ref_Class_Instance, AccessTypes.ref_Class_Static)
+                        ),
+                    ) +
+                    listOf("SYNCHRONIZED", "PUBLICATION", "NONE").map {
+                        PolicyAllowance.ClassLevel.ClassFieldAccess(
+                            "kotlin.LazyThreadSafetyMode",
+                            it,
+                            "Lkotlin/LazyThreadSafetyMode;",
+                            setOf(AccessTypes.read_Class_Static_Field)
+                        )
+                    }
+            ).toPolicy().toSet()
 
     val quarantine: Quarantine by lazy {
         Quarantine(
             Quarantine.painlessPlusKotlinFullPolicy +
-                receiverPolicies +
-                scriptKotlinPackagePolicies +
-                kotlinxSerializationPolicies +
-                serializationSupportPolicies,
+                    receiverPolicies +
+                    scriptKotlinPackagePolicies +
+                    kotlinxSerializationPolicies +
+                    serializationSupportPolicies,
         )
     }
 
@@ -114,12 +152,22 @@ object ChillOpenSearch {
 
     // ---- freeze -----------------------------------------------------------------------------
 
-    private fun freeze(slots: List<ChillSlot>, lambda: Any): String {
-        require(slots.map { it.kind }.toSet().size == slots.size) { "Each slot kind may be bound at most once: ${slots.map { it.kind }}" }
-        val shipClasses = slots.flatMap { shipSet(it.boundClass) }.distinct()
+    private fun freeze(
+        slots: List<ChillSlot>,
+        lambda: Any,
+        receiver: KClass<*> = ChillSearchScript::class,
+        returnType: KClass<*> = Any::class,
+    ): String {
+        require(slots.map { it.kind }
+            .toSet().size == slots.size) { "Each slot kind may be bound at most once: ${slots.map { it.kind }}" }
+        require(slots.indexOfFirst { it.kind == ChillSlot.KIND_SCORE }.let { it == -1 || it == slots.lastIndex }) {
+            "scoreType() must be the final slot"
+        }
+        val shipClasses =
+            slots.filterNot { it.kind == ChillSlot.KIND_SCORE }.flatMap { shipSet(it.boundClass) }.distinct()
         return chill.serializeFunctionToBase64(
-            lambdaReceiver = ChillSearchScript::class,
-            lambdaReturnType = Any::class,
+            lambdaReceiver = receiver,
+            lambdaReturnType = returnType,
             slots = slots.map { Chill.SlotDescriptor(it.kind, it.boundClass.name) },
             shipClasses = shipClasses,
             lambda = lambda,
@@ -138,41 +186,117 @@ object ChillOpenSearch {
 
     // ---- script(): one name, slot types pick the result kind ---------------------------------
     // paramOf  -> ChillScript (ready), paramType -> ChillScriptTemplate (reusable);
-    // canonical slot order: params, doc, source.
+    // canonical slot order: params, doc, source, score. Score is optional and always last.
 
-    fun script(block: ChillSearchScript.() -> Any?): ChillScript =
+    fun <R> script(block: ChillSearchScript.() -> R): ChillScript<R> =
         ChillScript(freeze(emptyList(), block), emptyMap())
 
-    fun <P : Any> script(p: ParamValueSlot<P>, block: ChillSearchScript.(P) -> Any?): ChillScript =
+    fun <P : Any, R> script(p: ParamValueSlot<P>, block: ChillSearchScript.(P) -> R): ChillScript<R> =
         ChillScript(freeze(listOf(p), block), ParamsCodec.encodeToMap(p.serializer, p.value))
 
-    fun <P : Any> script(p: ParamTypeSlot<P>, block: ChillSearchScript.(P) -> Any?): ChillScriptTemplate<P> =
+    fun <P : Any, R> script(p: ParamTypeSlot<P>, block: ChillSearchScript.(P) -> R): ChillScriptTemplate<P, R> =
         ChillScriptTemplate(freeze(listOf(p), block), p.serializer)
 
-    fun <D : Any> script(d: DocSlot<D>, block: ChillSearchScript.(D) -> Any?): ChillScript =
+    fun <D : Any, R> script(d: DocSlot<D>, block: ChillSearchScript.(D) -> R): ChillScript<R> =
         ChillScript(freeze(listOf(d), block), emptyMap())
 
-    fun <S : Any> script(s: SourceSlot<S>, block: ChillSearchScript.(S) -> Any?): ChillScript =
+    fun <S : Any, R> script(s: SourceSlot<S>, block: ChillSearchScript.(S) -> R): ChillScript<R> =
         ChillScript(freeze(listOf(s), block), emptyMap())
 
-    fun <P : Any, D : Any> script(p: ParamValueSlot<P>, d: DocSlot<D>, block: ChillSearchScript.(P, D) -> Any?): ChillScript =
+    fun <P : Any, D : Any, R> script(
+        p: ParamValueSlot<P>,
+        d: DocSlot<D>,
+        block: ChillSearchScript.(P, D) -> R
+    ): ChillScript<R> =
         ChillScript(freeze(listOf(p, d), block), ParamsCodec.encodeToMap(p.serializer, p.value))
 
-    fun <P : Any, D : Any> script(p: ParamTypeSlot<P>, d: DocSlot<D>, block: ChillSearchScript.(P, D) -> Any?): ChillScriptTemplate<P> =
+    fun <P : Any, D : Any, R> script(
+        p: ParamTypeSlot<P>,
+        d: DocSlot<D>,
+        block: ChillSearchScript.(P, D) -> R
+    ): ChillScriptTemplate<P, R> =
         ChillScriptTemplate(freeze(listOf(p, d), block), p.serializer)
 
-    fun <P : Any, S : Any> script(p: ParamValueSlot<P>, s: SourceSlot<S>, block: ChillSearchScript.(P, S) -> Any?): ChillScript =
+    fun <P : Any, S : Any, R> script(
+        p: ParamValueSlot<P>,
+        s: SourceSlot<S>,
+        block: ChillSearchScript.(P, S) -> R
+    ): ChillScript<R> =
         ChillScript(freeze(listOf(p, s), block), ParamsCodec.encodeToMap(p.serializer, p.value))
 
-    fun <P : Any, S : Any> script(p: ParamTypeSlot<P>, s: SourceSlot<S>, block: ChillSearchScript.(P, S) -> Any?): ChillScriptTemplate<P> =
+    fun <P : Any, S : Any, R> script(
+        p: ParamTypeSlot<P>,
+        s: SourceSlot<S>,
+        block: ChillSearchScript.(P, S) -> R
+    ): ChillScriptTemplate<P, R> =
         ChillScriptTemplate(freeze(listOf(p, s), block), p.serializer)
 
-    fun <D : Any, S : Any> script(d: DocSlot<D>, s: SourceSlot<S>, block: ChillSearchScript.(D, S) -> Any?): ChillScript =
+    fun <D : Any, S : Any, R> script(
+        d: DocSlot<D>,
+        s: SourceSlot<S>,
+        block: ChillSearchScript.(D, S) -> R
+    ): ChillScript<R> =
         ChillScript(freeze(listOf(d, s), block), emptyMap())
 
-    fun <P : Any, D : Any, S : Any> script(p: ParamValueSlot<P>, d: DocSlot<D>, s: SourceSlot<S>, block: ChillSearchScript.(P, D, S) -> Any?): ChillScript =
+    fun <P : Any, D : Any, S : Any, R> script(
+        p: ParamValueSlot<P>,
+        d: DocSlot<D>,
+        s: SourceSlot<S>,
+        block: ChillSearchScript.(P, D, S) -> R
+    ): ChillScript<R> =
         ChillScript(freeze(listOf(p, d, s), block), ParamsCodec.encodeToMap(p.serializer, p.value))
 
-    fun <P : Any, D : Any, S : Any> script(p: ParamTypeSlot<P>, d: DocSlot<D>, s: SourceSlot<S>, block: ChillSearchScript.(P, D, S) -> Any?): ChillScriptTemplate<P> =
+    fun <P : Any, D : Any, S : Any, R> script(
+        p: ParamTypeSlot<P>,
+        d: DocSlot<D>,
+        s: SourceSlot<S>,
+        block: ChillSearchScript.(P, D, S) -> R
+    ): ChillScriptTemplate<P, R> =
         ChillScriptTemplate(freeze(listOf(p, d, s), block), p.serializer)
+
+    // ---- bound score programs ----------------------------------------------------------------
+
+    fun <P : Any, D : Any> boundScore(
+        p: ParamValueSlot<P>,
+        d: DocSlot<D>,
+        block: ChillBoundScript.(P, D) -> Double,
+    ): ChillBoundScore<P, D> = ChillBoundScore(
+        freeze(listOf(p, d), block, ChillBoundScript::class, Double::class),
+        ParamsCodec.encodeToMap(p.serializer, p.value),
+        p.value,
+        block,
+    )
+
+    fun <P : Any, D : Any> boundScore(
+        p: ParamValueSlot<P>,
+        d: DocSlot<D>,
+        score: ScoreSlot,
+        block: ChillBoundScript.(P, D, Double) -> Double,
+    ): ChillBoundScoreWithBaseScore<P, D> = ChillBoundScoreWithBaseScore(
+        freeze(listOf(p, d, score), block, ChillBoundScript::class, Double::class),
+        ParamsCodec.encodeToMap(p.serializer, p.value),
+        p.value,
+        block,
+    )
+
+    fun <P : Any, D : Any> boundScore(
+        p: ParamTypeSlot<P>,
+        d: DocSlot<D>,
+        block: ChillBoundScript.(P, D) -> Double,
+    ): ChillBoundScoreTemplate<P, D> = ChillBoundScoreTemplate(
+        freeze(listOf(p, d), block, ChillBoundScript::class, Double::class),
+        p.serializer,
+        block,
+    )
+
+    fun <P : Any, D : Any> boundScore(
+        p: ParamTypeSlot<P>,
+        d: DocSlot<D>,
+        score: ScoreSlot,
+        block: ChillBoundScript.(P, D, Double) -> Double,
+    ): ChillBoundScoreWithBaseScoreTemplate<P, D> = ChillBoundScoreWithBaseScoreTemplate(
+        freeze(listOf(p, d, score), block, ChillBoundScript::class, Double::class),
+        p.serializer,
+        block,
+    )
 }
