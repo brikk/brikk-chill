@@ -1,6 +1,8 @@
 package dev.brikk.chill.opensearch
 
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.serializer
 import kotlin.jvm.javaObjectType
 
@@ -44,12 +46,50 @@ class SourceSlot<S : Any> @PublishedApi internal constructor(boundClass: Class<*
 class ScoreSlot @PublishedApi internal constructor() : ChillSlot(KIND_SCORE, Double::class.javaObjectType)
 
 inline fun <reified P : Any> paramOf(value: P): ParamValueSlot<P> =
-    ParamValueSlot(P::class.java, value, serializer<P>())
+    ParamValueSlot(P::class.java, value, serverResolvable(P::class.java, serializer<P>()))
 
-inline fun <reified P : Any> paramType(): ParamTypeSlot<P> = ParamTypeSlot(P::class.java, serializer<P>())
+inline fun <reified P : Any> paramType(): ParamTypeSlot<P> =
+    ParamTypeSlot(P::class.java, serverResolvable(P::class.java, serializer<P>()))
 
-inline fun <reified D : Any> docType(): DocSlot<D> = DocSlot(D::class.java)
+inline fun <reified D : Any> docType(): DocSlot<D> =
+    DocSlot(D::class.java.also { serverResolvable(it, serializer<D>()) })
 
-inline fun <reified S : Any> sourceType(): SourceSlot<S> = SourceSlot(S::class.java)
+inline fun <reified S : Any> sourceType(): SourceSlot<S> =
+    SourceSlot(S::class.java.also { serverResolvable(it, serializer<S>()) })
+
+/**
+ * The frozen payload carries a bound slot as a class *name*; the server rebuilds its serializer
+ * from that class alone. A generic type (`Wrapper<String>`) or a type needing a contextual /
+ * custom serializer at the call site has a fine client-side serializer but no server-side one -
+ * so it would freeze happily and fail at first use on the node. Catch that here, where the
+ * reified type is still known, by resolving exactly as the server will and comparing.
+ */
+@PublishedApi
+internal fun <T> serverResolvable(clazz: Class<*>, reified: KSerializer<T>): KSerializer<T> {
+    val fromClass = try {
+        serializer(clazz)
+    } catch (ex: SerializationException) {
+        throw IllegalArgumentException(
+            "${clazz.name} cannot be a bound slot type: the server rebuilds the serializer from the class name " +
+                "alone and cannot (${ex.message}). Use a non-generic @Serializable class.",
+            ex,
+        )
+    }
+    if (!fromClass.descriptor.sameShapeAs(reified.descriptor)) {
+        throw IllegalArgumentException(
+            "${clazz.name} cannot be a bound slot type: its serializer depends on type arguments the frozen payload " +
+                "does not carry (client sees ${reified.descriptor.serialName}, server would see ${fromClass.descriptor.serialName}). " +
+                "Use a non-generic @Serializable class.",
+        )
+    }
+    return reified
+}
+
+private fun SerialDescriptor.sameShapeAs(other: SerialDescriptor): Boolean =
+    serialName == other.serialName && kind == other.kind && elementsCount == other.elementsCount &&
+        (0 until elementsCount).all { i ->
+            getElementName(i) == other.getElementName(i) &&
+                getElementDescriptor(i).let { a -> other.getElementDescriptor(i).let { b -> a.serialName == b.serialName && a.kind == b.kind } }
+        }
 
 fun scoreType(): ScoreSlot = ScoreSlot()

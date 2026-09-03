@@ -79,7 +79,7 @@ class ChillSearchScriptTests {
 
     @Test
     fun boundScoreEvaluatesTypedDocumentsLocally() {
-        val ranking = ChillOpenSearch.boundScore(paramType<Boost>(), docType<RankedDoc>()) @ChillLambda { p, d ->
+        val ranking = ChillOpenSearch.bound(paramType<Boost>(), docType<RankedDoc>()) @ChillLambda { p, d ->
             p.factor * d.value
         }
 
@@ -91,7 +91,7 @@ class ChillSearchScriptTests {
 
     @Test
     fun scoreTypeAddsAnExplicitFinalLocalParameter() {
-        val ranking = ChillOpenSearch.boundScore(
+        val ranking = ChillOpenSearch.bound(
             paramType<Boost>(),
             docType<RankedDoc>(),
             scoreType(),
@@ -100,6 +100,43 @@ class ChillSearchScriptTests {
         val local: Double = ranking.evaluate(Boost(2.0), RankedDoc(3.0), 1.5)
 
         assertEquals(7.5, local)
+    }
+
+    @Test
+    fun boundCoversEverySlotShapeAndAnyResultType() {
+        // doc-only filter (Boolean), no params: ready immediately
+        val filter = ChillOpenSearch.bound(docType<RankedDoc>()) @ChillLambda { d -> d.value > 2.0 }
+        val passes: Boolean = filter.evaluate(RankedDoc(3.0))
+        assertTrue(passes && !filter.evaluate(RankedDoc(1.0)))
+
+        // params value + source + score -> String field
+        val label = ChillOpenSearch.bound(paramOf(Boost(2.0)), sourceType<RankedDoc>(), scoreType()) @ChillLambda { p, s, score ->
+            "v" + (p.factor * s.value + score).toInt()
+        }
+        val text: String = label.evaluate(RankedDoc(3.0), 1.0)
+        assertEquals("v7", text)
+        assertEquals(mapOf("factor" to 2.0), label.params)
+
+        // no slots at all still gets an evaluator
+        val constant = ChillOpenSearch.bound @ChillLambda { 42 }
+        assertEquals(42, constant.evaluate())
+    }
+
+    @Test
+    fun boundTemplateKeepsItsEvaluatorThroughWithParamsAndStored() {
+        val template = ChillOpenSearch.bound(paramType<Boost>(), docType<RankedDoc>(), scoreType()) @ChillLambda { p, d, score ->
+            p.factor * d.value + score
+        }
+
+        val ready = template.withParams(Boost(2.0))
+        assertEquals(template.source, ready.source)
+        assertEquals(7.5, ready.evaluate(RankedDoc(3.0), 1.5)) // params already applied
+        assertEquals(7.5, template.evaluate(Boost(2.0), RankedDoc(3.0), 1.5))
+
+        val stored = template.stored("rank-v1").withParams(Boost(3.0))
+        assertEquals("rank-v1", stored.id)
+        assertEquals(mapOf("factor" to 3.0), stored.params)
+        assertEquals(10.5, stored.evaluate(RankedDoc(3.0), 1.5))
     }
 
     @Test

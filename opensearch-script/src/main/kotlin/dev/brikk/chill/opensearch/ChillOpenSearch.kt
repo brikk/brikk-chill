@@ -6,6 +6,7 @@ import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.policy.toPolicy
 import dev.brikk.chill.quarantine.LibraryPolicies
 import dev.brikk.chill.quarantine.Quarantine
+import dev.brikk.chill.quarantine.ShipClosure
 import dev.brikk.chill.serialize.Chill
 import kotlin.reflect.KClass
 
@@ -18,7 +19,7 @@ object ChillOpenSearch {
     const val LANGUAGE = ChillScript.LANG
 
     private val receiverClassName = ChillSearchScript::class.java.name
-    private val boundReceiverClassName = ChillBoundScript::class.java.name
+    private val boundReceiverClassName = ChillBound::class.java.name
 
     /**
      * Allowances for the script receiver: instance methods and property reads, plus ref-only of
@@ -116,15 +117,12 @@ object ChillOpenSearch {
         )
     }
 
-    /** A bound class ships with its nested classes: kotlinx generates `Companion` and `$serializer`. */
-    private fun shipSet(clazz: Class<*>): List<Class<*>> {
-        val result = LinkedHashSet<Class<*>>()
-        fun visit(c: Class<*>) {
-            if (result.add(c)) c.declaredClasses.forEach { visit(it) }
-        }
-        visit(clazz)
-        return result.toList()
-    }
+    /**
+     * A bound class ships with everything of the user's that it needs and the policy does not
+     * already cover: its nested classes (kotlinx generates `Companion` and `$serializer`), and
+     * transitively any enum, nested `@Serializable` type, or helper its bytecode references.
+     */
+    private fun shipSet(clazz: Class<*>): List<Class<*>> = ShipClosure(quarantine).compute(clazz)
 
     // ---- script(): one name, slot types pick the result kind ---------------------------------
     // paramOf  -> ChillScript (ready), paramType -> ChillScriptTemplate (reusable);
@@ -196,49 +194,79 @@ object ChillOpenSearch {
     ): ChillScriptTemplate<P, R> =
         ChillScriptTemplate(freeze(listOf(p, d, s), block), p.serializer)
 
-    // ---- bound score programs ----------------------------------------------------------------
+    // ---- bound(): same slots as script(), empty receiver, evaluator kept for local execution ------
+    // Ready (paramOf / no params) -> ChillBoundScript<R, E>, E = (remaining slots) -> R.
+    // Template (paramType)         -> ChillBoundTemplate<P, R, E, B>, E = (P, slots) -> R, B = (slots) -> R.
 
-    fun <P : Any, D : Any> boundScore(
-        p: ParamValueSlot<P>,
-        d: DocSlot<D>,
-        block: ChillBoundScript.(P, D) -> Double,
-    ): ChillBoundScore<P, D> = ChillBoundScore(
-        freeze(listOf(p, d), block, ChillBoundScript::class, Double::class),
-        ParamsCodec.encodeToMap(p.serializer, p.value),
-        p.value,
-        block,
-    )
+    fun <R> bound(block: ChillBound.() -> R): ChillBoundScript<R, () -> R> =
+        ChillBoundScript(freeze(listOf(), block, ChillBound::class), emptyMap(), { block(ChillBound) })
 
-    fun <P : Any, D : Any> boundScore(
-        p: ParamValueSlot<P>,
-        d: DocSlot<D>,
-        score: ScoreSlot,
-        block: ChillBoundScript.(P, D, Double) -> Double,
-    ): ChillBoundScoreWithBaseScore<P, D> = ChillBoundScoreWithBaseScore(
-        freeze(listOf(p, d, score), block, ChillBoundScript::class, Double::class),
-        ParamsCodec.encodeToMap(p.serializer, p.value),
-        p.value,
-        block,
-    )
+    fun <R> bound(score: ScoreSlot, block: ChillBound.(Double) -> R): ChillBoundScript<R, (Double) -> R> =
+        ChillBoundScript(freeze(listOf(score), block, ChillBound::class), emptyMap(), { score -> block(ChillBound, score) })
 
-    fun <P : Any, D : Any> boundScore(
-        p: ParamTypeSlot<P>,
-        d: DocSlot<D>,
-        block: ChillBoundScript.(P, D) -> Double,
-    ): ChillBoundScoreTemplate<P, D> = ChillBoundScoreTemplate(
-        freeze(listOf(p, d), block, ChillBoundScript::class, Double::class),
-        p.serializer,
-        block,
-    )
+    fun <P : Any, R> bound(p: ParamValueSlot<P>, block: ChillBound.(P) -> R): ChillBoundScript<R, () -> R> =
+        ChillBoundScript(freeze(listOf(p), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { block(ChillBound, p.value) })
 
-    fun <P : Any, D : Any> boundScore(
-        p: ParamTypeSlot<P>,
-        d: DocSlot<D>,
-        score: ScoreSlot,
-        block: ChillBoundScript.(P, D, Double) -> Double,
-    ): ChillBoundScoreWithBaseScoreTemplate<P, D> = ChillBoundScoreWithBaseScoreTemplate(
-        freeze(listOf(p, d, score), block, ChillBoundScript::class, Double::class),
-        p.serializer,
-        block,
-    )
+    fun <P : Any, R> bound(p: ParamTypeSlot<P>, block: ChillBound.(P) -> R): ChillBoundTemplate<P, R, (P) -> R, () -> R> =
+        ChillBoundTemplate(freeze(listOf(p), block, ChillBound::class), p.serializer, { params -> block(ChillBound, params) }, { params -> { block(ChillBound, params) } })
+
+    fun <P : Any, R> bound(p: ParamValueSlot<P>, score: ScoreSlot, block: ChillBound.(P, Double) -> R): ChillBoundScript<R, (Double) -> R> =
+        ChillBoundScript(freeze(listOf(p, score), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { score -> block(ChillBound, p.value, score) })
+
+    fun <P : Any, R> bound(p: ParamTypeSlot<P>, score: ScoreSlot, block: ChillBound.(P, Double) -> R): ChillBoundTemplate<P, R, (P, Double) -> R, (Double) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, score), block, ChillBound::class), p.serializer, { params, score -> block(ChillBound, params, score) }, { params -> { score -> block(ChillBound, params, score) } })
+
+    fun <D : Any, R> bound(d: DocSlot<D>, block: ChillBound.(D) -> R): ChillBoundScript<R, (D) -> R> =
+        ChillBoundScript(freeze(listOf(d), block, ChillBound::class), emptyMap(), { doc -> block(ChillBound, doc) })
+
+    fun <D : Any, R> bound(d: DocSlot<D>, score: ScoreSlot, block: ChillBound.(D, Double) -> R): ChillBoundScript<R, (D, Double) -> R> =
+        ChillBoundScript(freeze(listOf(d, score), block, ChillBound::class), emptyMap(), { doc, score -> block(ChillBound, doc, score) })
+
+    fun <S : Any, R> bound(s: SourceSlot<S>, block: ChillBound.(S) -> R): ChillBoundScript<R, (S) -> R> =
+        ChillBoundScript(freeze(listOf(s), block, ChillBound::class), emptyMap(), { source -> block(ChillBound, source) })
+
+    fun <S : Any, R> bound(s: SourceSlot<S>, score: ScoreSlot, block: ChillBound.(S, Double) -> R): ChillBoundScript<R, (S, Double) -> R> =
+        ChillBoundScript(freeze(listOf(s, score), block, ChillBound::class), emptyMap(), { source, score -> block(ChillBound, source, score) })
+
+    fun <P : Any, D : Any, R> bound(p: ParamValueSlot<P>, d: DocSlot<D>, block: ChillBound.(P, D) -> R): ChillBoundScript<R, (D) -> R> =
+        ChillBoundScript(freeze(listOf(p, d), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { doc -> block(ChillBound, p.value, doc) })
+
+    fun <P : Any, D : Any, R> bound(p: ParamTypeSlot<P>, d: DocSlot<D>, block: ChillBound.(P, D) -> R): ChillBoundTemplate<P, R, (P, D) -> R, (D) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, d), block, ChillBound::class), p.serializer, { params, doc -> block(ChillBound, params, doc) }, { params -> { doc -> block(ChillBound, params, doc) } })
+
+    fun <P : Any, D : Any, R> bound(p: ParamValueSlot<P>, d: DocSlot<D>, score: ScoreSlot, block: ChillBound.(P, D, Double) -> R): ChillBoundScript<R, (D, Double) -> R> =
+        ChillBoundScript(freeze(listOf(p, d, score), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { doc, score -> block(ChillBound, p.value, doc, score) })
+
+    fun <P : Any, D : Any, R> bound(p: ParamTypeSlot<P>, d: DocSlot<D>, score: ScoreSlot, block: ChillBound.(P, D, Double) -> R): ChillBoundTemplate<P, R, (P, D, Double) -> R, (D, Double) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, d, score), block, ChillBound::class), p.serializer, { params, doc, score -> block(ChillBound, params, doc, score) }, { params -> { doc, score -> block(ChillBound, params, doc, score) } })
+
+    fun <P : Any, S : Any, R> bound(p: ParamValueSlot<P>, s: SourceSlot<S>, block: ChillBound.(P, S) -> R): ChillBoundScript<R, (S) -> R> =
+        ChillBoundScript(freeze(listOf(p, s), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { source -> block(ChillBound, p.value, source) })
+
+    fun <P : Any, S : Any, R> bound(p: ParamTypeSlot<P>, s: SourceSlot<S>, block: ChillBound.(P, S) -> R): ChillBoundTemplate<P, R, (P, S) -> R, (S) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, s), block, ChillBound::class), p.serializer, { params, source -> block(ChillBound, params, source) }, { params -> { source -> block(ChillBound, params, source) } })
+
+    fun <P : Any, S : Any, R> bound(p: ParamValueSlot<P>, s: SourceSlot<S>, score: ScoreSlot, block: ChillBound.(P, S, Double) -> R): ChillBoundScript<R, (S, Double) -> R> =
+        ChillBoundScript(freeze(listOf(p, s, score), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { source, score -> block(ChillBound, p.value, source, score) })
+
+    fun <P : Any, S : Any, R> bound(p: ParamTypeSlot<P>, s: SourceSlot<S>, score: ScoreSlot, block: ChillBound.(P, S, Double) -> R): ChillBoundTemplate<P, R, (P, S, Double) -> R, (S, Double) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, s, score), block, ChillBound::class), p.serializer, { params, source, score -> block(ChillBound, params, source, score) }, { params -> { source, score -> block(ChillBound, params, source, score) } })
+
+    fun <D : Any, S : Any, R> bound(d: DocSlot<D>, s: SourceSlot<S>, block: ChillBound.(D, S) -> R): ChillBoundScript<R, (D, S) -> R> =
+        ChillBoundScript(freeze(listOf(d, s), block, ChillBound::class), emptyMap(), { doc, source -> block(ChillBound, doc, source) })
+
+    fun <D : Any, S : Any, R> bound(d: DocSlot<D>, s: SourceSlot<S>, score: ScoreSlot, block: ChillBound.(D, S, Double) -> R): ChillBoundScript<R, (D, S, Double) -> R> =
+        ChillBoundScript(freeze(listOf(d, s, score), block, ChillBound::class), emptyMap(), { doc, source, score -> block(ChillBound, doc, source, score) })
+
+    fun <P : Any, D : Any, S : Any, R> bound(p: ParamValueSlot<P>, d: DocSlot<D>, s: SourceSlot<S>, block: ChillBound.(P, D, S) -> R): ChillBoundScript<R, (D, S) -> R> =
+        ChillBoundScript(freeze(listOf(p, d, s), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { doc, source -> block(ChillBound, p.value, doc, source) })
+
+    fun <P : Any, D : Any, S : Any, R> bound(p: ParamTypeSlot<P>, d: DocSlot<D>, s: SourceSlot<S>, block: ChillBound.(P, D, S) -> R): ChillBoundTemplate<P, R, (P, D, S) -> R, (D, S) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, d, s), block, ChillBound::class), p.serializer, { params, doc, source -> block(ChillBound, params, doc, source) }, { params -> { doc, source -> block(ChillBound, params, doc, source) } })
+
+    fun <P : Any, D : Any, S : Any, R> bound(p: ParamValueSlot<P>, d: DocSlot<D>, s: SourceSlot<S>, score: ScoreSlot, block: ChillBound.(P, D, S, Double) -> R): ChillBoundScript<R, (D, S, Double) -> R> =
+        ChillBoundScript(freeze(listOf(p, d, s, score), block, ChillBound::class), ParamsCodec.encodeToMap(p.serializer, p.value), { doc, source, score -> block(ChillBound, p.value, doc, source, score) })
+
+    fun <P : Any, D : Any, S : Any, R> bound(p: ParamTypeSlot<P>, d: DocSlot<D>, s: SourceSlot<S>, score: ScoreSlot, block: ChillBound.(P, D, S, Double) -> R): ChillBoundTemplate<P, R, (P, D, S, Double) -> R, (D, S, Double) -> R> =
+        ChillBoundTemplate(freeze(listOf(p, d, s, score), block, ChillBound::class), p.serializer, { params, doc, source, score -> block(ChillBound, params, doc, source, score) }, { params -> { doc, source, score -> block(ChillBound, params, doc, source, score) } })
 }

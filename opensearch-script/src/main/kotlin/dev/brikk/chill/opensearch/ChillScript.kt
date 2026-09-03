@@ -24,63 +24,80 @@ open class ChillScriptTemplate<P : Any, out R> internal constructor(
     val source: String,
     val paramsSerializer: KSerializer<P>,
 ) {
-    fun withParams(params: P): ChillScript<R> = ChillScript(source, ParamsCodec.encodeToMap(paramsSerializer, params))
+    open fun withParams(params: P): ChillScript<R> = ChillScript(source, ParamsCodec.encodeToMap(paramsSerializer, params))
 }
 
-/** Empty receiver for scripts whose OpenSearch inputs must all be declared as lambda parameters. */
-object ChillBoundScript
+/**
+ * Empty receiver for *bound* scripts: every OpenSearch input the lambda uses must be declared as
+ * a slot parameter, which is what lets the identical lambda run locally via `evaluate`.
+ */
+object ChillBound
 
-class ChillBoundScore<P : Any, D : Any> internal constructor(
+/**
+ * A ready-to-run bound script. [evaluate] is the same lambda that was frozen, with any
+ * `paramOf` value already applied, typed by the remaining slots in order: for
+ * `bound(paramOf(p), docType<D>(), scoreType())` it is `(D, Double) -> R`. What the node computes
+ * for a hit is what `evaluate` computes for the same document locally.
+ */
+class ChillBoundScript<out R, out E : Function<R>> internal constructor(
     source: String,
     params: Map<String, Any?>,
-    private val boundParams: P,
-    private val evaluator: ChillBoundScript.(P, D) -> Double,
-) : ChillScript<Double>(source, params) {
-    fun evaluate(doc: D): Double = evaluator(ChillBoundScript, boundParams, doc)
-}
+    val evaluate: E,
+) : ChillScript<R>(source, params)
 
-class ChillBoundScoreWithBaseScore<P : Any, D : Any> internal constructor(
-    source: String,
-    params: Map<String, Any?>,
-    private val boundParams: P,
-    private val evaluator: ChillBoundScript.(P, D, Double) -> Double,
-) : ChillScript<Double>(source, params) {
-    fun evaluate(doc: D, score: Double): Double = evaluator(ChillBoundScript, boundParams, doc, score)
-}
-
-class ChillBoundScoreTemplate<P : Any, D : Any> internal constructor(
+/**
+ * A reusable bound script with a declared params type. [evaluate] takes the params first
+ * (`(P, D, Double) -> R`); [withParams] fixes them and yields a ready [ChillBoundScript] whose
+ * `evaluate` omits them; [stored] keeps the evaluator alongside a stored-script reference.
+ */
+class ChillBoundTemplate<P : Any, out R, out E : Function<R>, out B : Function<R>> internal constructor(
     source: String,
     paramsSerializer: KSerializer<P>,
-    private val evaluator: ChillBoundScript.(P, D) -> Double,
-) : ChillScriptTemplate<P, Double>(source, paramsSerializer) {
-    fun evaluate(params: P, doc: D): Double = evaluator(ChillBoundScript, params, doc)
-}
+    val evaluate: E,
+    private val bind: (P) -> B,
+) : ChillScriptTemplate<P, R>(source, paramsSerializer) {
+    override fun withParams(params: P): ChillBoundScript<R, B> =
+        ChillBoundScript(source, ParamsCodec.encodeToMap(paramsSerializer, params), bind(params))
 
-class ChillBoundScoreWithBaseScoreTemplate<P : Any, D : Any> internal constructor(
-    source: String,
-    paramsSerializer: KSerializer<P>,
-    private val evaluator: ChillBoundScript.(P, D, Double) -> Double,
-) : ChillScriptTemplate<P, Double>(source, paramsSerializer) {
-    fun evaluate(params: P, doc: D, score: Double): Double = evaluator(ChillBoundScript, params, doc, score)
+    /** Reference this template as the stored script [id] (register it with `putChillScript`). */
+    fun stored(id: String): ChillStoredBoundRef<P, R, E, B> = ChillStoredBoundRef(id, paramsSerializer, evaluate, bind)
 }
 
 /**
  * A reference to a stored chill script (registered from a [ChillScriptTemplate]) with a typed
  * params requirement.
  */
-class ChillStoredScriptRef<P : Any>(
+open class ChillStoredScriptRef<P : Any>(
     val id: String,
     val paramsSerializer: KSerializer<P>,
 ) {
-    fun withParams(params: P): ChillStoredScript =
+    open fun withParams(params: P): ChillStoredScript =
         ChillStoredScript(id, ParamsCodec.encodeToMap(paramsSerializer, params))
 }
 
 /** A stored-script invocation: id + encoded params. */
-class ChillStoredScript(
+open class ChillStoredScript(
     val id: String,
     val params: Map<String, Any?>,
 )
+
+/** A stored reference to a bound template: typed params, and the evaluator travels with it. */
+class ChillStoredBoundRef<P : Any, out R, out E : Function<R>, out B : Function<R>> internal constructor(
+    id: String,
+    paramsSerializer: KSerializer<P>,
+    val evaluate: E,
+    private val bind: (P) -> B,
+) : ChillStoredScriptRef<P>(id, paramsSerializer) {
+    override fun withParams(params: P): ChillStoredBoundScript<R, B> =
+        ChillStoredBoundScript(id, ParamsCodec.encodeToMap(paramsSerializer, params), bind(params))
+}
+
+/** A stored bound invocation: id + params for the node, `evaluate` for the same math locally. */
+class ChillStoredBoundScript<out R, out B : Function<R>> internal constructor(
+    id: String,
+    params: Map<String, Any?>,
+    val evaluate: B,
+) : ChillStoredScript(id, params)
 
 fun <P : Any> storedChillScript(id: String, params: ParamTypeSlot<P>): ChillStoredScriptRef<P> =
     ChillStoredScriptRef(id, params.serializer)

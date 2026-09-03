@@ -112,46 +112,43 @@ Done:
 
 ## Medium (generality)
 
-### [ ] 5. Bound API is much narrower than `script()`
+### [x] 5. Bound API is much narrower than `script()`
 
-`boundScore` (`ChillOpenSearch.kt:259-301`) exists only for `(params, doc)` and
-`(params, doc, score)`, always returns `Double`, always requires a params slot, no `sourceType`,
-no doc-only. `ChillBoundScore*` classes (`ChillScript.kt:33-65`) hard-code `Double`.
+Was: `boundScore` covered only `(params, doc)` / `(params, doc, score)`, always `Double`, four
+result classes hard-coded to that shape; a stored ref lost the evaluator.
 
-Proposal: make the bound form the general one — `ChillBoundScript.(slots...) -> R` with
-`evaluate(...): R`; the engine already coerces `R` per context. That gives local filters and
-local field computations for free.
+Done: `ChillOpenSearch.bound(...)` mirrors `script(...)` for every slot combination (0-3 of
+params/doc/source, optional trailing `scoreType()`), any `R`, against the empty `ChillBound`
+receiver. Two generic result types replace the per-shape classes: `ChillBoundScript<R, E>`
+(ready; `evaluate: E` typed by the remaining slots, e.g. `(ArticleDoc, Double) -> Double`) and
+`ChillBoundTemplate<P, R, E, B>` (`evaluate` takes params first; `withParams` -> ready bound;
+`stored(id)` -> `ChillStoredBoundRef` whose `withParams` yields id + params + `evaluate`).
+Existing call sites compiled unchanged. Integration test registers a bound template, queries by
+id, and reranks locally with the same lambda; also runs a bound `Boolean` filter.
 
-Related: a stored bound template loses its evaluator. `storedChillScript(id, paramType<P>())`
-returns a plain `ChillStoredScriptRef`. For the local-rerank story, `template.stored(id)` should
-keep `evaluate`.
+### [x] 6. Bound types must be flat; failure mode is confusing
 
-### [ ] 6. Bound types must be flat; failure mode is confusing
+Was: `shipSet` shipped a bound class plus its lexically nested classes only, so an `enum`
+property or a nested `@Serializable` type failed at freeze with a policy violation that read
+like a security error.
 
-`shipSet` (`ChillOpenSearch.kt:178`) ships a bound class plus its *lexically nested* classes only.
-A doc/params class with an `enum` property, or a `_source` class with a nested `@Serializable`
-type, has a `$serializer` referencing `Status$$serializer` / `Status.values()`, which isn't
-shipped and isn't in policy -> freeze fails with a policy-violation message that reads like a
-security error.
+Done: `ShipClosure` (quarantine) computes the transitive closure: root + nested classes, then
+every class the bytecode references that the policy does not cover and that lives in the same
+classloader as the root, re-scanned. The walk stops at stdlib/kotlinx/JDK. Tests: closure
+contains exactly the user's type graph and verifies clean where the root alone did not; engine
+test decodes a top-level enum from doc values and a nested class + enum + list-of-nested from
+`_source`.
 
-`decodeEnum` (`DocValuesCodec.kt:119`) is effectively unreachable unless the enum is nested
-inside the doc class. (Nested enums now verify: the `Object.clone()` gap was fixed under #4.)
+### [x] 7. Generic bound types fail server-side
 
-Fix: compute the ship closure transitively (classes from the user's classloader referenced by the
-bound class / its serializer that are not covered by policy), the same way
-`Chill.serializeFunctionToBase64` already walks lambda relatives. Add tests: enum property,
-nested `@Serializable` in `sourceType`.
+Was: `paramType<Wrapper<String>>()` froze fine (client has the full reified serializer) and
+failed on the node with "Serializer for class 'Wrapper' is not found" (server rebuilds from the
+class name alone).
 
-### [ ] 7. Generic bound types fail server-side
-
-The client has a full `KSerializer<P>` from `serializer<P>()`, but the envelope carries only
-`P::class.java.name`, and the server rebuilds via `serializer(clazz)`
-(`opensearch-plugin/.../ChillScriptEngine.kt:219`). `paramType<Wrapper<String>>()` freezes fine
-and fails at compile on the node with kotlinx's "Serializer for class 'Wrapper' is not found".
-
-Fix: validate at freeze — resolve `serializer(boundClass)` client-side and compare descriptors to
-the reified serializer; fail there with a clear message. (`Chill.kt:258` already has
-`// TODO: handle types with generics`.)
+Done: every slot constructor resolves `serializer(Class)` the way the server will and compares
+descriptor shape with the reified serializer; mismatch or failure throws
+`IllegalArgumentException` at the slot naming the class and the reason. Contextual and
+collection-typed properties pass.
 
 ### [ ] 8. Local/remote parity caveats not surfaced
 

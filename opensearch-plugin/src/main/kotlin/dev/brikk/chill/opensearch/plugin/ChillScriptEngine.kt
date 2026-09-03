@@ -1,7 +1,7 @@
 package dev.brikk.chill.opensearch.plugin
 
 import dev.brikk.chill.opensearch.ChillOpenSearch
-import dev.brikk.chill.opensearch.ChillBoundScript
+import dev.brikk.chill.opensearch.ChillBound
 import dev.brikk.chill.opensearch.ChillSearchScript
 import dev.brikk.chill.opensearch.ChillSlot
 import dev.brikk.chill.opensearch.DocValuesCodec
@@ -108,7 +108,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                     else -> throw IllegalStateException("unknown slot kind ${slot.kind}")
                 }
             }
-            val invocationReceiver: Any = if (boundReceiver) ChillBoundScript else receiver
+            val invocationReceiver: Any = if (boundReceiver) ChillBound else receiver
             ExecutionBudget.begin(maxLoopIterations)
             val result = try {
                 invoke(fn, invocationReceiver, args)
@@ -184,7 +184,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
         }
 
         val contextualReceiverName = ChillSearchScript::class.java.name
-        val boundReceiverName = ChillBoundScript::class.java.name
+        val boundReceiverName = ChillBound::class.java.name
         if (data.receiverClassName != contextualReceiverName && data.receiverClassName != boundReceiverName) {
             throw ScriptException(
                 "unsupported chill script receiver ${data.receiverClassName}",

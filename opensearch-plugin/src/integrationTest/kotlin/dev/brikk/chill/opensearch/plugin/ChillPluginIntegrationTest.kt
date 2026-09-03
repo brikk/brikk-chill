@@ -454,7 +454,7 @@ class ChillPluginIntegrationTest {
 
     @Test
     fun sameBoundScoreRunsLocallyAndInOpenSearch() {
-        val ranking = ChillOpenSearch.boundScore(
+        val ranking = ChillOpenSearch.bound(
             paramOf(rankParams),
             docType<ArticleDoc>(),
             scoreType(),
@@ -486,7 +486,7 @@ class ChillPluginIntegrationTest {
 
     @Test
     fun unmappedDocFieldWithDefaultScoresTheSameLocallyAndRemotely() {
-        val ranking = ChillOpenSearch.boundScore(
+        val ranking = ChillOpenSearch.bound(
             paramOf(rankParams),
             docType<ArticleWithUnmappedField>(),
         ) @ChillLambda { _, d -> d.reads * d.bonus }
@@ -541,5 +541,31 @@ class ChillPluginIntegrationTest {
         val tagScores = scriptScoreSearch(tagged.toScript()).hits().hits().associate { it.id() to it.score()!! }
         assertEquals(5.0, tagScores.getValue("fresh-weighted-topic"))
         assertEquals(1.0, tagScores.getValue("penalized-author"))
+    }
+
+    @Test
+    fun storedBoundTemplateRanksOnTheNodeAndRerankLocallyWithTheSameLambda() {
+        val template = ChillOpenSearch.bound(paramType<RankParams>(), docType<ArticleDoc>(), scoreType()) @ChillLambda { p, d, score ->
+            val boost = 1.0 + (p.topicWeights[d.topicId.toString()] ?: 0.0)
+            val penalty = 1.0 - (p.authorPenalties[d.authorId.toString()] ?: 0.0)
+            score * d.reads * boost * penalty
+        }
+        client.putChillScript("chill-bound-rank-v1", template)
+        val stored = template.stored("chill-bound-rank-v1").withParams(rankParams)
+
+        val remote = scriptScoreSearch(stored.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        val local = fixtures.associate { f ->
+            f.id to stored.evaluate(ArticleDoc(f.popularity, f.reads, f.words, f.featured, f.authorId, f.topicId, now.minusHours(f.ageHours)), 1.0)
+        }
+        assertEquals(local.keys, remote.keys)
+        local.forEach { (id, score) -> assertEquals(score, remote.getValue(id), score * 1e-6) { "stored bound mismatch for $id" } }
+
+        // a bound filter (Boolean) and a bound field (String) run in their contexts too
+        val filter = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d -> d.featured == 1L && d.words >= 1000 }
+        val filtered = client.search(
+            SearchRequest.of { s -> s.index(index).query(Query.of { q -> q.script { it.script(filter.toScript()) } }) },
+            Map::class.java,
+        ).hits().hits().map { it.id() }.toSet()
+        assertEquals(fixtures.filter { filter.evaluate(ArticleDoc(featured = it.featured, words = it.words, postedAt = now)) }.map { it.id }.toSet(), filtered)
     }
 }

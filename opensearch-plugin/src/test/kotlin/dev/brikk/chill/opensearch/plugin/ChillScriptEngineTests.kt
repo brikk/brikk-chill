@@ -6,6 +6,7 @@ import dev.brikk.chill.opensearch.docType
 import dev.brikk.chill.opensearch.paramOf
 import dev.brikk.chill.opensearch.paramType
 import dev.brikk.chill.opensearch.scoreType
+import dev.brikk.chill.opensearch.sourceType
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.serialize.Chill
@@ -46,6 +47,20 @@ class ArticleDoc(
     @SerialName("topic_id") val topicId: Long = 0,
     @Contextual @SerialName("posted_at") val postedAt: ZonedDateTime,
 )
+
+@Serializable
+enum class Kind { POST, PAGE }
+
+@Serializable
+class Geo(val lat: Double = 0.0, val lon: Double = 0.0)
+
+/** Doc-values binding with a top-level enum (doc values are flat; the enum arrives as its name). */
+@Serializable
+class KindedDoc(val kind: Kind = Kind.POST, @SerialName("read_count") val reads: Double = 0.0)
+
+/** `_source` binding with a nested serializable, an enum, and a list of nested objects. */
+@Serializable
+class ArticleSource(val geo: Geo = Geo(), val kind: Kind = Kind.PAGE, val related: List<Geo> = emptyList())
 
 class ChillScriptEngineTests {
 
@@ -168,7 +183,7 @@ class ChillScriptEngineTests {
 
     @Test
     fun boundScoreExecutesLocallyAndThroughCompiledSlots() {
-        val ranking = ChillOpenSearch.boundScore(
+        val ranking = ChillOpenSearch.bound(
             paramType<RankParams>(),
             docType<ArticleDoc>(),
             scoreType(),
@@ -196,8 +211,8 @@ class ChillScriptEngineTests {
     @Test
     fun explicitScoreSlotControlsNeedsScore() {
         val withoutScore =
-            ChillOpenSearch.boundScore(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { _, d -> d.reads }
-        val withScore = ChillOpenSearch.boundScore(
+            ChillOpenSearch.bound(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { _, d -> d.reads }
+        val withScore = ChillOpenSearch.bound(
             paramType<RankParams>(),
             docType<ArticleDoc>(),
             scoreType(),
@@ -214,7 +229,7 @@ class ChillScriptEngineTests {
 
     @Test
     fun explicitScoreSlotIsRejectedOutsideScoreContext() {
-        val withScore = ChillOpenSearch.boundScore(
+        val withScore = ChillOpenSearch.bound(
             paramType<RankParams>(),
             docType<ArticleDoc>(),
             scoreType(),
@@ -265,7 +280,7 @@ class ChillScriptEngineTests {
      */
     @Test
     fun representativeBoundPayloadStaysWellUnderTheOpenSearchScriptSizeLimit() {
-        val ranking = ChillOpenSearch.boundScore(
+        val ranking = ChillOpenSearch.bound(
             paramType<RankParams>(),
             docType<ArticleDoc>(),
             scoreType(),
@@ -279,6 +294,36 @@ class ChillScriptEngineTests {
         val ready = ranking.withParams(RankParams(nowEpochSec = 1, topicWeights = mapOf("9" to 2.0)))
         val remote = compiled.execute(compiled.instantiate(), ChillSearchScript(ready.params, sampleDoc, 2.0), compiled.decodeParams(ready.params), sampleDoc, null, 2.0)
         assertEquals(2.0 * 120.0 * 3.0, remote)
+    }
+
+    // ---- ship closure: user types referenced by bound classes ----
+
+    @Test
+    fun boundClassesReferencingEnumsAndNestedSerializablesShipAndDecode() {
+        // enum in a doc-values binding; nested class + enum + list-of-nested in a _source binding
+        val script = ChillOpenSearch.script(docType<KindedDoc>(), sourceType<ArticleSource>()) @ChillLambda { d, s ->
+            val kindWeight = if (d.kind == Kind.POST) 2.0 else 1.0
+            val nearby = s.related.count { it.lat > s.geo.lat }
+            kindWeight * d.reads + s.geo.lon + nearby + (if (s.kind == Kind.PAGE) 100.0 else 0.0)
+        }
+
+        val compiled = engine.compileChill("closure", script.source)
+        val doc = sampleDoc + ("kind" to listOf("POST"))
+        val source = mapOf(
+            "geo" to mapOf("lat" to 10.0, "lon" to 0.5),
+            "kind" to "PAGE",
+            "related" to listOf(mapOf("lat" to 11.0), mapOf("lat" to 9.0), mapOf("lat" to 12.0, "lon" to 1.0)),
+        )
+        val result = compiled.execute(compiled.instantiate(), ChillSearchScript(emptyMap(), doc, 0.0), null, doc, { source })
+        assertEquals(2.0 * 120.0 + 0.5 + 2 + 100.0, result)
+
+        // the shipped set is the user's type graph and nothing else
+        val shipped = ChillOpenSearch.chill.deserFunctionFromPrefixedBase64(script.source).classes.map { it.className }
+        val pkg = "dev.brikk.chill.opensearch.plugin."
+        assertTrue(shipped.all { it.startsWith(pkg) }) { shipped.toString() }
+        for (needed in listOf("Kind", "Kind\$Companion", "Geo", "Geo\$\$serializer", "ArticleSource\$\$serializer", "KindedDoc\$\$serializer")) {
+            assertTrue(pkg + needed in shipped) { "missing $needed in $shipped" }
+        }
     }
 
     // ---- execution limits ----

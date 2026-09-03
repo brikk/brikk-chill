@@ -70,6 +70,29 @@ class ChillScriptTemplate<P : Any> internal constructor(
 }
 ```
 
+### Bound scripts: the same lambda locally and on the node
+
+`ChillOpenSearch.bound(...)` takes the same slots but runs against the empty `ChillBound`
+receiver, so every input is a declared parameter and the lambda is also callable locally:
+
+```kotlin
+val ranking = ChillOpenSearch.bound(paramOf(rankParams), docType<ArticleDoc>(), scoreType()) @ChillLambda { p, d, score ->
+    score * d.reads * (1.0 + (p.topicWeights[d.topicId.toString()] ?: 0.0))
+}
+ranking.toScript()                // for the node
+ranking.evaluate(articleDoc, 1.0) // the identical math for a document already in hand
+```
+
+Ready scripts are `ChillBoundScript<R, E>` with `evaluate: E` typed by the remaining slots;
+templates are `ChillBoundTemplate<P, R, E, B>` (`evaluate(params, ...)`, `withParams`, and
+`stored(id)` whose `withParams` keeps `evaluate`). Any slot combination and any `R` work: a
+`Boolean` bound script is a filter, a `String` one a script field.
+
+Bound classes may reference other user types (enums, nested `@Serializable` classes); the ship
+set is the transitive closure of what the policy does not cover (`ShipClosure`). Generic bound
+types are refused at the slot: the payload carries a class name only and the node could not
+rebuild the serializer.
+
 ## 3. Slot API
 
 ```kotlin
@@ -125,7 +148,7 @@ No renames, no bound properties on the context: bindings are lambda parameters o
 ## 4. Bindings: kotlinx.serialization
 
 Bound classes are ordinary `@Serializable` classes. Their compiler-generated `Companion` and
-`$serializer` classes ship with the frozen lambda and are **byte-verified like everything else**
+`$serializer` classes (and any user types they reference) ship with the frozen lambda and are **byte-verified like everything else**
 — extending nothing, trusted for nothing. The kotlinx-serialization-core runtime is whitelisted
 by a policy **generated at build time** by scanning the jar (same treatment as kotlin-stdlib),
 never by hand-listing and never at runtime. Both policies ship as
