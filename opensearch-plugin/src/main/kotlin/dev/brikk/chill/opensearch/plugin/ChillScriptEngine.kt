@@ -77,9 +77,24 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
             chill.instantiateSerializedFunctionSafely(className, serializedLambda, classLoader, additionalPolicies)
 
         /** Params decode once per query (they are constant per query). */
-        fun decodeParams(params: Map<String, Any?>): Any? =
+        fun decodeParams(params: Map<String, Any?>): Any? = withBudget {
             slots.firstOrNull { it.kind == ChillSlot.KIND_PARAMS }
                 ?.let { ParamsCodec.decodeFromMap(it.deserializer!!, params) }
+        }
+
+        private inline fun <T> withBudget(block: () -> T): T {
+            ExecutionBudget.begin(limits.maxLoopIterations, limits.maxAllocation)
+            try {
+                return block()
+            } catch (ex: ChillExecutionLimitError) {
+                throw ScriptException(
+                    "chill script exceeded an execution limit: ${ex.message}",
+                    ex, emptyList(), scriptName ?: "<inline>", ChillOpenSearch.LANGUAGE,
+                )
+            } finally {
+                ExecutionBudget.end()
+            }
+        }
 
         /** Per-document inputs; a mutable cell reused per leaf so execute() allocates nothing of its own. */
         class Inputs {
@@ -111,27 +126,19 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
          * (`R.(A...) -> T` is `Function{1+n}`). Arms the per-execution budget; an exhausted limit
          * surfaces as a [ScriptException]. [receiver] may be null when [needsReceiver] is false.
          */
-        fun execute(fn: Any, receiver: ChillSearchScript?, inputs: Inputs): R {
+        fun execute(fn: Any, receiver: ChillSearchScript?, inputs: Inputs): R = withBudget {
             val r: Any = if (boundReceiver) ChillBound else receiver ?: throw IllegalStateException("contextual script needs a receiver")
             val p = producers
-            ExecutionBudget.begin(limits.maxLoopIterations, limits.maxAllocation)
-            val result = try {
-                @Suppress("UNCHECKED_CAST")
-                when (p.size) {
-                    0 -> (fn as kotlin.jvm.functions.Function1<Any?, Any?>).invoke(r)
-                    1 -> (fn as kotlin.jvm.functions.Function2<Any?, Any?, Any?>).invoke(r, p[0](inputs))
-                    2 -> (fn as kotlin.jvm.functions.Function3<Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs))
-                    3 -> (fn as kotlin.jvm.functions.Function4<Any?, Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs), p[2](inputs))
-                    4 -> (fn as kotlin.jvm.functions.Function5<Any?, Any?, Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs), p[2](inputs), p[3](inputs))
-                    else -> throw IllegalStateException("unsupported slot arity ${p.size}")
-                }
-            } catch (ex: ChillExecutionLimitError) {
-                throw ScriptException(
-                    "chill script exceeded an execution limit: ${ex.message}",
-                    ex, emptyList(), scriptName ?: "<inline>", ChillOpenSearch.LANGUAGE,
-                )
+            @Suppress("UNCHECKED_CAST")
+            val result = when (p.size) {
+                0 -> (fn as kotlin.jvm.functions.Function1<Any?, Any?>).invoke(r)
+                1 -> (fn as kotlin.jvm.functions.Function2<Any?, Any?, Any?>).invoke(r, p[0](inputs))
+                2 -> (fn as kotlin.jvm.functions.Function3<Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs))
+                3 -> (fn as kotlin.jvm.functions.Function4<Any?, Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs), p[2](inputs))
+                4 -> (fn as kotlin.jvm.functions.Function5<Any?, Any?, Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs), p[2](inputs), p[3](inputs))
+                else -> throw IllegalStateException("unsupported slot arity ${p.size}")
             }
-            return decodeResult(result)
+            decodeResult(result)
         }
 
         /** Convenience for tests and one-off calls: builds an [Inputs] per call. */

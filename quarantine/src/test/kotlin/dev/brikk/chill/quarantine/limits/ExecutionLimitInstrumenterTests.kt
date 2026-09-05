@@ -54,7 +54,7 @@ class ExecutionLimitInstrumenterTests {
 
     @AfterEach
     fun disarm() {
-        ExecutionBudget.begin(Long.MAX_VALUE)
+        ExecutionBudget.end()
         LimitedCharSequence.limitFactor = LimitedCharSequence.DEFAULT_LIMIT_FACTOR
     }
 

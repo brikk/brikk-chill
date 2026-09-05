@@ -9,6 +9,8 @@ import dev.brikk.chill.opensearch.scoreType
 import dev.brikk.chill.opensearch.sourceType
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
+import dev.brikk.chill.quarantine.limits.ChillExecutionLimitError
+import dev.brikk.chill.quarantine.limits.ExecutionBudget
 import dev.brikk.chill.serialize.Chill
 import dev.brikk.chill.serialize.ChillLambda
 import kotlinx.serialization.Contextual
@@ -42,6 +44,14 @@ class KindedDoc(val kind: Kind = Kind.POST, @SerialName("read_count") val reads:
 /** `_source` binding with a nested serializable, an enum, and a list of nested objects. */
 @Serializable
 class ArticleSource(val geo: Geo = Geo(), val kind: Kind = Kind.PAGE, val related: List<Geo> = emptyList())
+
+@Serializable
+class BudgetParams(val iterations: Int = 0, val allocation: Int = 0) {
+    init {
+        repeat(iterations) { require(it >= 0) }
+        ByteArray(allocation)
+    }
+}
 
 class ChillScriptEngineTests {
 
@@ -334,6 +344,57 @@ class ChillScriptEngineTests {
     }
 
     // ---- execution limits ----
+
+    @Test
+    fun failedExecutionDoesNotPoisonTheNextQueryOnTheSameThread() {
+        val engine = ChillScriptEngine(ExecutionLimits(maxLoopIterations = 100))
+        val spin = ChillOpenSearch.bound(@ChillLambda {
+            var n = 0
+            while (n < 1000) n++
+            n
+        })
+        assertThrows<ScriptException> { engine.run(spin) }
+        assertEquals(Long.MAX_VALUE, ExecutionBudget.remaining())
+
+        // Compile, initialize the enum, decode params, thaw and execute after the failed query.
+        val ready = ChillOpenSearch.bound(paramOf(KindedDoc(Kind.PAGE, 42.0))) @ChillLambda { p ->
+            if (p.kind == Kind.PAGE) p.reads else 0.0
+        }
+        repeat(2) { assertEquals(42.0, engine.run(ready)) }
+        assertEquals(Long.MAX_VALUE, ExecutionBudget.remaining())
+        assertEquals(Int.MAX_VALUE, ExecutionBudget.checkAllocation(Int.MAX_VALUE))
+    }
+
+    @Test
+    fun parameterDecodingHasItsOwnBudgetAndRecoversAfterFailure() {
+        val engine = ChillScriptEngine(ExecutionLimits(maxLoopIterations = 100, maxAllocation = 32))
+        val template = ChillOpenSearch.bound(paramType<BudgetParams>()) @ChillLambda { p -> p.iterations }
+        val compiled = engine.compileChill("parameter-budget", template.source)
+        for (params in listOf(mapOf("iterations" to 1000), mapOf("allocation" to 33))) {
+            val ex = assertThrows<ScriptException> { compiled.decodeParams(params) }
+            assertEquals("parameter-budget", ex.script)
+            assertTrue(ex.cause is ChillExecutionLimitError)
+            assertEquals(Long.MAX_VALUE, ExecutionBudget.remaining())
+
+            val decoded = compiled.decodeParams(mapOf("iterations" to 5, "allocation" to 32))
+            assertEquals(5, compiled.execute(compiled.instantiate(), null, decoded, emptyMap(), null))
+        }
+    }
+
+    @Test
+    fun ordinaryExceptionsAlsoReleaseTheExecutionBudget() {
+        val script = ChillOpenSearch.bound(@ChillLambda { require(false) { "bad input" }; 1 })
+        assertThrows<IllegalArgumentException> { limitedEngine.run(script) }
+        assertEquals(Long.MAX_VALUE, ExecutionBudget.remaining())
+        assertEquals(Int.MAX_VALUE, ExecutionBudget.checkAllocation(Int.MAX_VALUE))
+
+        val template = ChillOpenSearch.bound(paramType<BudgetParams>()) @ChillLambda { p -> p.iterations }
+        val compiled = limitedEngine.compileChill("bad-params", template.source)
+        assertThrows<kotlinx.serialization.SerializationException> {
+            compiled.decodeParams(mapOf("iterations" to "not a number"))
+        }
+        assertEquals(Long.MAX_VALUE, ExecutionBudget.remaining())
+    }
 
     private val limitedEngine = ChillScriptEngine(ExecutionLimits(maxLoopIterations = 10_000, regexLimitFactor = 6))
 

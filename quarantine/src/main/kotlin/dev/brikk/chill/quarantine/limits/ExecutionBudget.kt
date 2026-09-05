@@ -4,8 +4,8 @@ package dev.brikk.chill.quarantine.limits
  * Per-thread loop budget consumed by instrumented code ([ExecutionLimitInstrumenter] inserts a
  * [tick] before every backward branch).
  *
- * The executing side calls [begin] before each unit of untrusted work (the OpenSearch plugin: once
- * per document). Because the budget is per thread rather than per method, nested loops, helper
+ * The executing side calls [begin] before each unit of untrusted work and [end] in a finally block.
+ * Because the budget is per thread rather than per method, nested loops, helper
  * methods and recursion all draw from the same allowance. Outside a [begin]/work window the
  * budget is effectively unlimited, so class initialisers run at define time are unaffected.
  */
@@ -33,6 +33,14 @@ object ExecutionBudget {
         val b = budget.get()
         b.remaining = maxIterations
         b.maxAllocation = maxAllocation
+    }
+
+    /** Restores the inactive state without allocating a new cell for the next document. */
+    @JvmStatic
+    fun end() {
+        val b = budget.get()
+        b.remaining = Long.MAX_VALUE
+        b.maxAllocation = Int.MAX_VALUE
     }
 
     /**
