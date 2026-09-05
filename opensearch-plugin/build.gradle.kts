@@ -159,6 +159,8 @@ val benchmark = sourceSets.create("benchmark") {
 }
 configurations[benchmark.implementationConfigurationName].extendsFrom(configurations["api"], configurations["implementation"])
 val releasedBenchmark = configurations.create("releasedBenchmark") { isCanBeConsumed = false }
+val benchmarkReleaseVersion = providers.gradleProperty("benchmarkReleased")
+    .map { if (it.isBlank() || it == "true") "0.1.0" else it }.orElse("0.1.0")
 dependencies {
     for (configuration in listOf(benchmark.implementationConfigurationName, releasedBenchmark.name)) {
         add(configuration, libs.opensearch.server)
@@ -166,7 +168,7 @@ dependencies {
         add(configuration, libs.jmh.core)
         add(configuration, libs.mockito.core)
     }
-    add(releasedBenchmark.name, "dev.brikk.chill:chill-opensearch-plugin:0.1.0")
+    add(releasedBenchmark.name, "dev.brikk.chill:chill-opensearch-plugin:${benchmarkReleaseVersion.get()}")
     add(benchmark.annotationProcessorConfigurationName, libs.jmh.generator)
 }
 tasks.register<JavaExec>("benchmark") {

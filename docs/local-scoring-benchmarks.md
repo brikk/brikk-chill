@@ -24,6 +24,7 @@ For a focused twelve-field comparison:
 Add `-PbenchmarkReleased` to run the same benchmark classes against the published `0.1.0`
 runtime rather than the checkout's runtime. This avoids keeping a copied legacy decoder in
 the benchmark or undoing working changes to obtain a baseline.
+Use `-PbenchmarkReleased=0.1.1` to select a different published version.
 
 Useful parameters:
 
@@ -65,3 +66,42 @@ results separate when considering lazy projections.
 
 These are numeric-field benchmarks. Nullable fields, dates, enums, lists, custom serializers,
 and error behavior have regression coverage, but their performance requires separate fixtures.
+
+## Mixed workloads
+
+`WorkloadBenchmark` adds synthetic mixed-width inputs and query-parameter maps. Its index has
+29 numeric columns, but its DTOs declare only the fields the calculation uses. It contains no
+application scoring rules or production data.
+
+- `scenario=fields10`: five `Int` and five `Long` fields, one required and the rest defaulted,
+  summed without parameter maps. This is the field-binding control.
+- `scenario=mixed10`: the same ten fields, four string-keyed parameter-map lookups, a ratio,
+  logarithm, square root, and a three-way branch. The arithmetic is deliberately synthetic.
+- `scenario=lookup2`: one `Int`, one `Long`, one parameter-map lookup, and a logarithmic calculation.
+- `mapSize=64,1024`: entries in each parameter map.
+- `hitPercent=0,50,100`: requested lookup-hit percentage for generated keys before missing fields
+  are applied. A missing key field defaults to zero, which is not a table key.
+- `missingPercent=0,10`: staggered missing fields; the required field is always present.
+
+For example, compare the released runtime's scoring paths:
+
+```sh
+./gradlew -PbenchmarkReleased=0.1.1 :opensearch-plugin:benchmark --args='WorkloadBenchmark.scan -p scenario=mixed10 -p mapSize=1024 -p missingPercent=0,10 -p hitPercent=50 -f 2 -wi 4 -i 5 -prof gc -foe true'
+```
+
+The fixture validates every document's result against the generated inputs before timing, rather
+than checking only the final sum. The timed scan still returns a checksum and reports ns/document.
+Parameters are decoded once when creating the query factory, outside the scan, and shared across
+its fresh leaf instances. Leaf creation and thaw remain amortized into the scan measurement.
+
+Measure that parameter-materialization cost separately:
+
+```sh
+./gradlew -PbenchmarkReleased=0.1.1 :opensearch-plugin:benchmark --args='WorkloadBenchmark.querySetup -p binding=painless_cached,bound -p scenario=mixed10,lookup2 -p mapSize=64,1024 -p missingPercent=0 -p hitPercent=50 -f 2 -wi 3 -i 4 -prof gc -foe true'
+```
+
+`querySetup` reports microseconds and allocated bytes **per query-factory creation**, not per
+document or per complete HTTP search. It starts with already-parsed wire parameter maps. Painless
+can retain those maps directly; typed Chill params materialize the declared parameter object.
+On a distributed search this work can occur per shard. Do not fold it into scoring latency without
+accounting for how many documents and leaf instances share the factory.
