@@ -176,6 +176,13 @@ object DocValuesCodec {
         override fun decodeChar(): Char = (rawValue() as? String)?.singleOrNull() ?: mismatch("a single-character String")
         override fun decodeString(): String = rawValue() as? String ?: mismatch("String")
 
+        override fun decodeEnum(enumDescriptor: SerialDescriptor): Int {
+            val name = rawValue() as? String ?: mismatch("an enum name (String)")
+            val idx = enumDescriptor.getElementIndex(name)
+            if (idx == CompositeDecoder.UNKNOWN_NAME) mismatch("one of ${(0 until enumDescriptor.elementsCount).map { enumDescriptor.getElementName(it) }}")
+            return idx
+        }
+
         override fun decodeNotNullMark(): Boolean = rawValue() != null
         override fun decodeValue(): Any = rawValue() ?: mismatch("a value")
     }

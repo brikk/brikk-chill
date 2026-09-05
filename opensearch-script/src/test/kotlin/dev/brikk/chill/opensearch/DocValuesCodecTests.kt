@@ -16,6 +16,36 @@ import java.time.ZonedDateTime
 class DocValuesCodecTests {
 
     @Serializable
+    enum class Kind { @SerialName("post") POST, PAGE }
+
+    @Serializable
+    class KindLists(val kinds: List<Kind?> = emptyList(), val primary: Kind = Kind.PAGE)
+
+    @Test
+    fun enumListsUseSerializedNamesAndPreserveElements() {
+        val decoded = DocValuesCodec.decode(
+            KindLists.serializer(),
+            mapOf("kinds" to listOf("PAGE", "post", null, "PAGE"), "primary" to listOf("post")),
+        )
+        assertEquals(listOf(Kind.PAGE, Kind.POST, null, Kind.PAGE), decoded.kinds)
+        assertEquals(Kind.POST, decoded.primary)
+        for (doc in listOf<Map<String, List<Any?>>>(emptyMap(), mapOf("kinds" to emptyList()))) {
+            assertEquals(emptyList<Kind>(), DocValuesCodec.decode(KindLists.serializer(), doc).kinds)
+        }
+    }
+
+    @Test
+    fun invalidEnumListElementsNameTheFieldAndIndex() {
+        for (bad in listOf("POST", "unknown", 7)) {
+            val ex = assertThrows<SerializationException> {
+                DocValuesCodec.decode(KindLists.serializer(), mapOf("kinds" to listOf("PAGE", bad)))
+            }
+            assertTrue("'kinds'[1]" in ex.message!!) { ex.message }
+            if (bad is String) assertTrue("post" in ex.message!! && "PAGE" in ex.message!!) { ex.message }
+        }
+    }
+
+    @Serializable
     class ArticleDoc(
         @SerialName("popularity_score") val popularity: Double = 0.0,
         val reads: Double = 0.0,
