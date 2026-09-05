@@ -16,8 +16,9 @@ Releases and snapshots publish the same archive as a Maven artifact:
 dev.brikk.chill:chill-opensearch-plugin:<version>:os-<opensearch-version>@zip
 ```
 
-Both CI workflows also retain the ZIP under their `chill-opensearch-plugin` artifact. Download
-and extract the CI artifact wrapper to get the installable ZIP inside it.
+Release builds attach the installable ZIP directly to the GitHub Release tagged `v<version>`.
+Both CI workflows also retain the ZIP as a workflow artifact. Download and extract that CI artifact
+wrapper to get the installable ZIP inside it. See [releasing](releasing.md) for the branch triggers.
 
 Install on each node, then restart OpenSearch:
 

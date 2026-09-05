@@ -1,13 +1,13 @@
-name: Release to Maven Central
+name: Release to Maven Central and GitHub
 
 # Push a branch named release/<version> (e.g. release/0.1.0) to publish that exact version of
-# all modules to Maven Central. A manual run (workflow_dispatch) with an explicit version input
-# is also supported.
+# all modules to Maven Central and create a GitHub Release with the installable OpenSearch ZIP.
+# A manual run (workflow_dispatch) with an explicit version input is also supported.
 #
 # The deployment bundle is uploaded to the Central Portal with publishingType=AUTOMATIC:
 # Central validates and publishes it server-side with NO manual UI step, and this workflow does
-# NOT wait for validation/publication to finish - it ends as soon as the upload is accepted and
-# prints the deployment id/URL for checking later.
+# NOT wait for validation/publication to finish. The GitHub Release is created after the upload
+# is accepted, and its notes distinguish submission from completed Central publication.
 
 on:
   push:
@@ -19,11 +19,11 @@ on:
         required: true
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
@@ -40,9 +40,11 @@ jobs:
 
       - name: Determine version
         id: ver
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$REQUESTED_VERSION" ]; then
+            VERSION="$REQUESTED_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#release/}"
           fi
@@ -50,10 +52,19 @@ jobs:
             echo "::error::Could not derive a version from ref '$GITHUB_REF_NAME'. Use a branch named release/<version> or the workflow_dispatch input."
             exit 1
           fi
-          case "$VERSION" in
-            *-SNAPSHOT) echo "::error::Release version must not be a SNAPSHOT ($VERSION)."; exit 1 ;;
-          esac
+          if [[ ! "$VERSION" =~ ^[0-9][0-9A-Za-z._-]*$ ]] || [[ "$VERSION" == *-SNAPSHOT ]]; then
+            echo "::error::Invalid release version '$VERSION'. Use a version such as 0.1.0, without -SNAPSHOT."
+            exit 1
+          fi
+          TAG="v$VERSION"
+          git check-ref-format "refs/tags/$TAG"
+          REMOTE_TAG=$(git ls-remote --tags --refs origin "refs/tags/$TAG")
+          if [ -n "$REMOTE_TAG" ]; then
+            echo "::error::Tag $TAG already exists. Release versions are immutable; choose a new version."
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release version: $VERSION"
 
       - name: Build, test, and stage signed publications
@@ -103,3 +114,31 @@ jobs:
             echo "- deployment id: \`$DEPLOYMENT_ID\`"
             echo "- mode: AUTOMATIC (publishes without manual action; not awaited by this job)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release with the OpenSearch plugin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(opensearch-plugin/build/distributions/chill-script-"$VERSION"-os-*.zip)
+          if [ "${#assets[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one installable OpenSearch plugin ZIP for $VERSION."
+            exit 1
+          fi
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          notes="JARs and the plugin ZIP have been submitted to Maven Central for automatic validation and publication. Central processing is asynchronous; upload acceptance does not mean publication has finished.
+
+          The attached ZIP is the installable OpenSearch plugin. See the [installation instructions]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$TAG/docs/plugin-installation.md)."
+          RELEASE_URL=$(gh release create "$TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes "$notes" \
+            --generate-notes \
+            "${flags[@]}")
+          echo "GitHub Release: $RELEASE_URL"
+          echo "- GitHub Release: $RELEASE_URL" >> "$GITHUB_STEP_SUMMARY"
