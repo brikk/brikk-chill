@@ -2,8 +2,10 @@ package dev.brikk.chill.gradle
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.SourceSet
+import org.gradle.api.tasks.Sync
 
 /**
  * Verifies all serializable (class-compiled) lambdas in the main compilation output against a
@@ -25,9 +27,12 @@ class ChillPlugin : Plugin<Project> {
         extension.writeManifest.convention(true)
         extension.policyDirectory.convention(project.layout.buildDirectory.dir("chill/policy"))
 
-        val generateAll = project.tasks.register("chillGeneratePolicies") { task ->
+        val generateAll = project.tasks.register("chillGeneratePolicies", Sync::class.java) { task ->
             task.group = "build"
-            task.description = "Generates every library policy registered in chill.policies"
+            task.description = "Assembles the currently registered library policies and explicit overrides"
+            task.into(extension.policyDirectory)
+            task.from(extension.policyOverrides)
+            task.duplicatesStrategy = DuplicatesStrategy.EXCLUDE // explicit overrides take precedence
         }
 
         extension.policies.all { spec ->
@@ -54,9 +59,9 @@ class ChillPlugin : Plugin<Project> {
                 task.excludePackages.set(spec.excludePackages)
                 task.excludeClasses.set(spec.excludeClasses)
                 task.supportPolicies.set(spec.supportPolicies)
-                task.outputDirectory.set(extension.policyDirectory)
+                task.outputDirectory.set(project.layout.buildDirectory.dir("chill/generated-policy/${spec.name}"))
             }
-            generateAll.configure { it.dependsOn(generate) }
+            generateAll.configure { it.from(generate) }
         }
 
         project.plugins.withId("java-base") {

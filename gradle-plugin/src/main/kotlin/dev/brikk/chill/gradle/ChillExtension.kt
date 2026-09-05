@@ -55,9 +55,13 @@ abstract class ChillExtension {
     abstract val policies: NamedDomainObjectContainer<ChillPolicySpec>
 
     /**
-     * Where generated policies are written and where `chillVerifyLambdas` looks for overrides
-     * (default `build/chill/policy`). Hand this directory to the runtime as `chill.policy.dir`,
-     * or copy its files into the OpenSearch plugin's `config/chill-script/`.
+     * Assembled output owned by `chillGeneratePolicies` (default `build/chill/policy`). Removed
+     * registrations are removed here too. Hand this directory to the runtime as `chill.policy.dir`,
+     * or copy its files into the OpenSearch plugin's `config/chill-script/`. Do not keep hand-written
+     * files here; supply those through [policyOverrides].
      */
     abstract val policyDirectory: DirectoryProperty
+
+    /** Explicit `<name>.ctena` files, or directories containing them; replace generated files by name. */
+    abstract val policyOverrides: ConfigurableFileCollection
 }

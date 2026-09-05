@@ -3,6 +3,7 @@ package dev.brikk.chill.gradle
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -148,5 +149,78 @@ class ChillPluginFunctionalTest {
         assertEquals(TaskOutcome.FAILED, result.task(":chillVerifyLambdas")!!.outcome)
         assertTrue("kotlin.collections" in result.output) { result.output }
         assertTrue("violate the chill policy" in result.output)
+    }
+
+    @Test
+    fun removingPolicyRegistrationsMatchesACleanBuild() {
+        val body = """ listOf("a", "b").joinToString("-") """
+        val extraPolicy = """
+            register("extra") {
+                $stdlibJarsFromRuntimeClasspath
+                profile.set("custom")
+                scanMode.set("all")
+                packages.add("kotlin.ranges")
+            }
+        """.trimIndent()
+        writeProject(body, """
+            policies {
+                register("kotlin-stdlib") {
+                    $stdlibJarsFromRuntimeClasspath
+                    profile.set("custom")
+                    scanMode.set("all")
+                    packages.add("kotlin.text")
+                }
+                $extraPolicy
+            }
+        """.trimIndent())
+        val rejected = runner("chillVerifyLambdas").buildAndFail()
+        assertTrue("kotlin.collections" in rejected.output)
+        val output = File(projectDir, "build/chill/policy")
+        assertEquals(setOf("extra.ctena", "kotlin-stdlib.ctena"), output.list()!!.toSet())
+
+        // Remove one registration, then the last, without cleaning either time.
+        writeProject(body, "policies { $extraPolicy }")
+        runner("chillVerifyLambdas").build()
+        assertEquals(setOf("extra.ctena"), output.list()!!.toSet())
+        writeProject(body, "")
+        runner("chillVerifyLambdas").build()
+        assertTrue(output.listFiles().isNullOrEmpty())
+        val manifest = File(projectDir, "build/generated/chill-manifest/META-INF/chill/verified-lambdas.manifest")
+        val warm = manifest.readText()
+        runner("clean", "chillVerifyLambdas").build()
+        assertEquals(warm, manifest.readText())
+    }
+
+    @Test
+    fun generatorsOwnSeparateOutputsAndExplicitOverridesAreNotModified() {
+        val override = File(projectDir, "manual/kotlin-stdlib.ctena").apply {
+            parentFile.mkdirs()
+            writeText("# deliberately empty override\n")
+        }
+        writeProject(""" listOf("a").joinToString() """, """
+            policyOverrides.from(file("manual/kotlin-stdlib.ctena"))
+            policies {
+                register("kotlin-stdlib") { $stdlibJarsFromRuntimeClasspath }
+                register("extra") {
+                    $stdlibJarsFromRuntimeClasspath
+                    profile.set("custom")
+                    scanMode.set("all")
+                    packages.add("kotlin.ranges")
+                }
+            }
+        """.trimIndent())
+        runner("chillGeneratePolicies").build()
+        val second = runner("chillGeneratePolicies").build()
+        for (name in listOf("KotlinStdlib", "Extra")) {
+            assertEquals(TaskOutcome.UP_TO_DATE, second.task(":chillGeneratePolicy$name")!!.outcome)
+        }
+        val output = File(projectDir, "build/chill/policy/kotlin-stdlib.ctena")
+        assertEquals(override.readText(), output.readText())
+        val rejected = runner("chillVerifyLambdas").buildAndFail()
+        assertTrue("kotlin.collections" in rejected.output)
+        writeProject(""" listOf("a").joinToString() """, "")
+        runner("chillVerifyLambdas").build()
+        assertFalse(output.exists())
+        assertEquals("# deliberately empty override\n", override.readText())
     }
 }
