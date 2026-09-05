@@ -206,9 +206,9 @@ Done:
       `FilterScript` keeps its lookup private and publishes no `_source`, so a source-bound filter
       is the one case that still takes its own. `sourceType` had no integration coverage; added
       one across all three contexts, including original tag order from `_source`.
-- [ ] Serializer resolution at compile executes shipped `Companion.serializer()` and `<clinit>`.
-      Verified code, but design §6/§7 say "before anything executes". Adjust wording (or see #2,
-      which removes the companion call).
+- [x] Wording: §6 now says "before any shipped class is defined"; §7 flow names the
+      instrumenter step and states that serializer resolution runs shipped `<clinit>` /
+      `Companion.serializer()` (verified and instrumented) once per compile.
 - [ ] `requireSealed = false` packages + `filterKnownClasses` means a shipped class named e.g.
       `kotlin.collections.Evil` is silently dropped rather than rejected. Not exploitable (it
       can't load), but a shipped class landing in an allowed package should be a hard error.

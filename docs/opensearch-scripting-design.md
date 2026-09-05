@@ -255,7 +255,7 @@ stored + baked params is a footgun (two sources of params truth).
 
 *(as-built)* OpenSearch 3.x does **not** compile custom-language stored scripts at PUT time: a
 policy-violating payload is accepted into cluster state and rejected at **first use** (compile,
-before anything executes), with the violations in the error. Verified by integration test.
+before any shipped class is defined), with the violations in the error. Verified by integration test.
 
 ## 7. Server flow and caching
 
@@ -265,8 +265,10 @@ compile(name, source, context, params)          [invoked by OpenSearch; cached b
   ├─ deserFromPrefixedBase64 ........................ envelope + HMAC integrity
   │    └─ verifyClassAgainstPolicies ................ scan cache + verify-result memo (existing)
   ├─ slot descriptors from envelope ................. kinds + bound class names
-  ├─ ScriptClassLoader .............................. defines only verified shipped classes
-  ├─ serializer resolution per bound class .......... trusted engine code, once per compile
+  ├─ ExecutionLimitInstrumenter ..................... loop / regex / allocation bounds woven in
+  ├─ ScriptClassLoader .............................. defines only verified, instrumented classes (child-first)
+  ├─ serializer resolution per bound class .......... runs shipped <clinit> + Companion.serializer():
+  │                                                    verified, instrumented user code, once per compile
   └─ context factory (score/filter/field)
        ├─ newFactory: decode params ................. once per query
        └─ newInstance (per leaf): thaw lambda ....... policy-gated deserialization (existing)
