@@ -390,6 +390,16 @@ class ChillScriptEngineTests {
     }
 
     @Test
+    fun oversizedAllocationFailsTheDocument() {
+        val engine = ChillScriptEngine(ExecutionLimits(maxAllocation = 4096))
+        val hog = ChillOpenSearch.script(@ChillLambda { "x".repeat(1 shl 20).length })
+        val ex = assertThrows<ScriptException> { engine.run(hog) }
+        assertTrue("single allocation" in ex.message!!) { ex.message }
+        val fine = ChillOpenSearch.script(@ChillLambda { DoubleArray(100) { it * 0.5 }.sum() })
+        assertEquals(2475.0, engine.run(fine))
+    }
+
+    @Test
     fun regexCanBeDisabledByFactorZero() {
         val engine = ChillScriptEngine(ExecutionLimits(regexLimitFactor = 0))
         val script = ChillOpenSearch.script(@ChillLambda { "x1".replace(Regex("\\d"), "") })

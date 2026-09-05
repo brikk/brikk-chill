@@ -1,5 +1,6 @@
 package dev.brikk.chill.opensearch.plugin
 
+import dev.brikk.chill.quarantine.limits.ExecutionBudget
 import dev.brikk.chill.quarantine.limits.LimitedCharSequence
 import org.opensearch.common.settings.Setting
 import org.opensearch.common.settings.Settings
@@ -16,6 +17,8 @@ class ExecutionLimits(
     val maxLoopIterations: Long = MAX_LOOP_ITERATIONS.get(Settings.EMPTY),
     /** A regex may read at most this many times the input length before it is aborted; 0 disables regex. */
     val regexLimitFactor: Int = REGEX_LIMIT_FACTOR.get(Settings.EMPTY),
+    /** Largest single array / `repeat` allocation, in elements. */
+    val maxAllocation: Int = MAX_ALLOCATION.get(Settings.EMPTY),
 ) {
     companion object {
         val MAX_LOOP_ITERATIONS: Setting<Long> = Setting.longSetting(
@@ -26,9 +29,13 @@ class ExecutionLimits(
             "chill.script.regex_limit_factor", LimitedCharSequence.DEFAULT_LIMIT_FACTOR, 0, Setting.Property.NodeScope,
         )
 
-        val ALL: List<Setting<*>> = listOf(MAX_LOOP_ITERATIONS, REGEX_LIMIT_FACTOR)
+        val MAX_ALLOCATION: Setting<Int> = Setting.intSetting(
+            "chill.script.max_allocation", ExecutionBudget.DEFAULT_MAX_ALLOCATION, 1, Setting.Property.NodeScope,
+        )
+
+        val ALL: List<Setting<*>> = listOf(MAX_LOOP_ITERATIONS, REGEX_LIMIT_FACTOR, MAX_ALLOCATION)
 
         fun fromSettings(settings: Settings): ExecutionLimits =
-            ExecutionLimits(MAX_LOOP_ITERATIONS.get(settings), REGEX_LIMIT_FACTOR.get(settings))
+            ExecutionLimits(MAX_LOOP_ITERATIONS.get(settings), REGEX_LIMIT_FACTOR.get(settings), MAX_ALLOCATION.get(settings))
     }
 }

@@ -14,14 +14,41 @@ object ExecutionBudget {
     private class Budget {
         @JvmField
         var remaining: Long = Long.MAX_VALUE
+
+        @JvmField
+        var maxAllocation: Int = Int.MAX_VALUE
     }
+
+    const val DEFAULT_MAX_ALLOCATION: Int = 1 shl 20 // 1M elements / chars per single allocation
 
     private val budget: ThreadLocal<Budget> = ThreadLocal.withInitial { Budget() }
 
-    /** Arms the current thread with [maxIterations] loop iterations for the work that follows. */
+    /**
+     * Arms the current thread for the work that follows: [maxIterations] loop iterations in total,
+     * and at most [maxAllocation] elements (or chars) per single array / `repeat` allocation.
+     */
     @JvmStatic
-    fun begin(maxIterations: Long) {
-        budget.get().remaining = maxIterations
+    @JvmOverloads
+    fun begin(maxIterations: Long, maxAllocation: Int = DEFAULT_MAX_ALLOCATION) {
+        val b = budget.get()
+        b.remaining = maxIterations
+        b.maxAllocation = maxAllocation
+    }
+
+    /**
+     * Called by instrumented code with the requested length before `newarray` / `anewarray` and
+     * before `String.repeat` / `CharSequence.repeat`; returns it unchanged when allowed. Keeps a
+     * single allocation from taking the heap; growth by repeated small allocations is bounded by
+     * the loop budget instead.
+     */
+    @JvmStatic
+    fun checkAllocation(size: Int): Int {
+        if (size > budget.get().maxAllocation) {
+            throw ChillExecutionLimitError(
+                "script requested a single allocation of $size elements, above the ${budget.get().maxAllocation} allowed",
+            )
+        }
+        return size
     }
 
     /** Called by instrumented code before each backward branch. */

@@ -66,7 +66,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
         scoreAccessed: Boolean,
         val slots: List<SlotPlan>,
         private val boundReceiver: Boolean,
-        private val maxLoopIterations: Long,
+        private val limits: ExecutionLimits,
         private val decodeResult: (Any?) -> R,
     ) {
         val needsSource: Boolean = slots.any { it.kind == ChillSlot.KIND_SOURCE }
@@ -109,7 +109,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                 }
             }
             val invocationReceiver: Any = if (boundReceiver) ChillBound else receiver
-            ExecutionBudget.begin(maxLoopIterations)
+            ExecutionBudget.begin(limits.maxLoopIterations, limits.maxAllocation)
             val result = try {
                 invoke(fn, invocationReceiver, args)
             } catch (ex: ChillExecutionLimitError) {
@@ -279,7 +279,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
         return CompiledChillScript(
             name, data.className, data.serializedLambda, classLoader, additionalPolicies,
             ChillOpenSearch.chill, scoreAccessed, slotPlans,
-            data.receiverClassName == boundReceiverName, limits.maxLoopIterations, decodeResult,
+            data.receiverClassName == boundReceiverName, limits, decodeResult,
         )
     }
 

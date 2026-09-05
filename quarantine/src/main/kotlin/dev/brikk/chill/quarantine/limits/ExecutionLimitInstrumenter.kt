@@ -9,6 +9,7 @@ import org.objectweb.asm.Type
 import org.objectweb.asm.tree.AbstractInsnNode
 import org.objectweb.asm.tree.ClassNode
 import org.objectweb.asm.tree.InsnList
+import org.objectweb.asm.tree.IntInsnNode
 import org.objectweb.asm.tree.InvokeDynamicInsnNode
 import org.objectweb.asm.tree.JumpInsnNode
 import org.objectweb.asm.tree.LabelNode
@@ -16,7 +17,9 @@ import org.objectweb.asm.tree.LdcInsnNode
 import org.objectweb.asm.tree.LookupSwitchInsnNode
 import org.objectweb.asm.tree.MethodInsnNode
 import org.objectweb.asm.tree.MethodNode
+import org.objectweb.asm.tree.MultiANewArrayInsnNode
 import org.objectweb.asm.tree.TableSwitchInsnNode
+import org.objectweb.asm.tree.TypeInsnNode
 import org.objectweb.asm.tree.VarInsnNode
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -34,6 +37,10 @@ import java.util.regex.Pattern
  *    `java.util.regex.Pattern` / `Matcher`) the input argument is passed through
  *    [LimitedCharSequence.wrap]; `Pattern.asPredicate()` is redirected to
  *    [LimitedCharSequence.limitedPredicate]
+ *  - **allocations**: the length operand of every `newarray` / `anewarray` and the count of
+ *    `String.repeat` / `CharSequence.repeat` passes through [ExecutionBudget.checkAllocation].
+ *    Kotlin never emits multi-dimensional `multianewarray` (nested arrays are built per level, each
+ *    checked); a single-dimension one is checked like `anewarray`
  *  - method-reference handles to those regex operations (`regex::matches`) have no call site to
  *    rewrite and are rejected with [InstrumentationRejectedException]; a lambda body works instead
  *
@@ -83,6 +90,13 @@ class ExecutionLimitInstrumenter {
         }
 
         val asPredicateKey = key(PATTERN, "asPredicate", AS_PREDICATE_DESC)
+
+        /** Call sites whose *last* int argument is an allocation count: `(receiver) count -> String`. */
+        val allocationCalls: Set<String> = setOf(
+            key("java/lang/String", "repeat", "(I)Ljava/lang/String;"),
+            key("kotlin/text/StringsKt", "repeat", "(Ljava/lang/CharSequence;I)Ljava/lang/String;"),
+        )
+        val CHECK_ALLOC = MethodInsnNode(Opcodes.INVOKESTATIC, BUDGET, "checkAllocation", "(I)I", false)
     }
 
     fun instrument(clazz: NamedClassBytes): NamedClassBytes = NamedClassBytes(clazz.className, instrument(clazz.bytes))
@@ -107,6 +121,7 @@ class ExecutionLimitInstrumenter {
         val loopBranches = ArrayList<AbstractInsnNode>()
         val regexCalls = ArrayList<Pair<MethodInsnNode, LimitedCall>>()
         val predicateCalls = ArrayList<MethodInsnNode>()
+        val allocations = ArrayList<AbstractInsnNode>()
 
         for (insn in insns) {
             when (insn) {
@@ -117,7 +132,11 @@ class ExecutionLimitInstrumenter {
                     val k = key(insn.owner, insn.name, insn.desc)
                     limitedCalls[k]?.let { regexCalls += insn to it }
                     if (k == asPredicateKey) predicateCalls += insn
+                    if (k in allocationCalls) allocations += insn
                 }
+                is IntInsnNode -> if (insn.opcode == Opcodes.NEWARRAY) allocations += insn
+                is TypeInsnNode -> if (insn.opcode == Opcodes.ANEWARRAY) allocations += insn
+                is MultiANewArrayInsnNode -> if (insn.dims == 1) allocations += insn
                 is InvokeDynamicInsnNode -> insn.bsmArgs.filterIsInstance<Handle>().forEach { rejectRegexHandle(className, method, it) }
                 is LdcInsnNode -> (insn.cst as? Handle)?.let { rejectRegexHandle(className, method, it) }
             }
@@ -126,6 +145,8 @@ class ExecutionLimitInstrumenter {
         loopBranches.forEach { branch ->
             insns.insertBefore(branch, MethodInsnNode(Opcodes.INVOKESTATIC, BUDGET, "tick", "()V", false))
         }
+        // the count is the top of stack at each of these sites; (I)I keeps the stack shape
+        allocations.forEach { site -> insns.insertBefore(site, CHECK_ALLOC.clone(null)) }
         regexCalls.forEach { (call, limited) -> limitInput(method, insns, call, limited) }
         predicateCalls.forEach { call ->
             insns.set(call, MethodInsnNode(Opcodes.INVOKESTATIC, LIMITED, "limitedPredicate", LIMITED_PREDICATE_DESC, false))

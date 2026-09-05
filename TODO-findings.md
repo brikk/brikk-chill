@@ -188,10 +188,14 @@ Done:
 
 ## Low
 
-- [ ] Allocation bounds: a script can still allocate up to the heap (`"x".repeat(1e9)`,
-      `LongArray(Int.MAX_VALUE)`). Painless has the same gap. Options: rewrite `NEWARRAY`/
-      `ANEWARRAY`/`MULTIANEWARRAY` call sites to check size, and wrap `repeat`/`StringBuilder`
-      growth; or accept the heap as the backstop and document.
+- [x] Allocation bounds. The instrumenter now routes the length operand of `newarray` /
+      `anewarray` (and single-dim `multianewarray`) and the count of `String.repeat` /
+      `CharSequence.repeat` through `ExecutionBudget.checkAllocation(I)I` (stack-neutral). Node
+      setting `chill.script.max_allocation`, default 1M elements per single allocation. Growth by
+      repeated small allocations is bounded by the loop budget. Kotlin builds nested arrays per
+      level so each dimension is checked. Not covered: a single huge `StringBuilder.ensureCapacity`
+      or `ArrayList(n)` (both internal `anewarray`s live in the JDK, not in shipped code); the heap
+      remains the backstop for those, as in Painless.
 
 - [ ] **Per-document hot path** (`ChillScriptEngine.kt:83-116`): `slots.map` allocates a list,
       `when (slot.kind)` string-dispatches, and a `ChillSearchScript` is built even when

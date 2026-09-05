@@ -56,6 +56,14 @@ class LimitFixture {
     fun split(input: String): List<String> = input.split(Regex("\\s+"))
 
     fun predicate(pattern: String, input: String): Boolean = Pattern.compile(pattern).asPredicate().test(input)
+
+    fun bigPrimitiveArray(n: Int): Int = LongArray(n).size
+
+    fun bigObjectArray(n: Int): Int = arrayOfNulls<String>(n).size
+
+    fun bigString(n: Int): Int = "ab".repeat(n).length
+
+    fun nestedArrays(n: Int, m: Int): Int = Array(n) { IntArray(m) }.sumOf { it.size }
 }
 
 class RegexRefFixture {

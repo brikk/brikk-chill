@@ -104,6 +104,26 @@ class ExecutionLimitInstrumenterTests {
         assertTrue(ExecutionBudget.remaining() < 0)
     }
 
+    // ---- allocations ----
+
+    @Test
+    fun singleAllocationsAboveTheCapAreRefusedAndSmallOnesUntouched() {
+        val fixture = instrumented(LimitFixture::class.java)
+        ExecutionBudget.begin(1_000_000, maxAllocation = 10_000)
+
+        assertEquals(5_000, fixture.call("bigPrimitiveArray", 5_000))
+        assertEquals(5_000, fixture.call("bigObjectArray", 5_000))
+        assertEquals(10_000, fixture.call("bigString", 5_000))
+        assertEquals(3 * 100, fixture.call("nestedArrays", 3, 100))
+
+        for ((method, arg) in listOf("bigPrimitiveArray" to 10_001, "bigObjectArray" to 200_000, "bigString" to 1_000_000)) {
+            val ex = assertThrows<ChillExecutionLimitError>(method) { fixture.call(method, arg) }
+            assertTrue("single allocation" in ex.message!!) { ex.message }
+        }
+        // inner dimension over the cap is caught at its own newarray
+        assertThrows<ChillExecutionLimitError> { fixture.call("nestedArrays", 2, 20_000) }
+    }
+
     // ---- regex ----
 
     @Test

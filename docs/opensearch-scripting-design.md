@@ -286,6 +286,8 @@ After verification and before any class is defined, the plugin instruments the s
 - every backward branch calls `ExecutionBudget.tick()`; the engine arms a per-thread budget
   before each document, so all loops, helpers and recursion in one execution share
   `chill.script.max_loop_iterations` (default 1,000,000)
+- every `newarray`/`anewarray` length and `repeat` count passes `ExecutionBudget.checkAllocation`,
+  capped by `chill.script.max_allocation` (default 1M elements per single allocation)
 - every regex operation's `CharSequence` input (`kotlin.text.Regex`, `StringsKt` regex
   extensions, `Pattern`/`Matcher`) is wrapped in `LimitedCharSequence`, which aborts once
   character reads exceed `chill.script.regex_limit_factor` x input length (default 6; 0 disables
