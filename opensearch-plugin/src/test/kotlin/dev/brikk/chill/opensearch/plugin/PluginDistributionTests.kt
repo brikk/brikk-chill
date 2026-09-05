@@ -45,6 +45,7 @@ class PluginDistributionTests {
             val names = zip.entries().asSequence().map { it.name }.toList()
             assertTrue(names.any { it.startsWith("opensearch-plugin-") && it.endsWith(".jar") })
             assertFalse(names.any { "test-fixtures" in it || it.startsWith("opensearch-java-") })
+            assertFalse(names.any { it.startsWith("jmh-") || it.startsWith("mockito-") || it.startsWith("byte-buddy-") })
         }
     }
 }

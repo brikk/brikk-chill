@@ -151,3 +151,32 @@ val packagingTestTask = tasks.register<Test>("packagingTest") {
 }
 
 tasks.named("check") { dependsOn(integrationTestTask, packagingTestTask) }
+
+// Local synthetic benchmarks only; not part of the published plugin or ordinary test runs.
+val benchmark = sourceSets.create("benchmark") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().output
+}
+configurations[benchmark.implementationConfigurationName].extendsFrom(configurations["api"], configurations["implementation"])
+val releasedBenchmark = configurations.create("releasedBenchmark") { isCanBeConsumed = false }
+dependencies {
+    for (configuration in listOf(benchmark.implementationConfigurationName, releasedBenchmark.name)) {
+        add(configuration, libs.opensearch.server)
+        add(configuration, libs.opensearch.lang.painless)
+        add(configuration, libs.jmh.core)
+        add(configuration, libs.mockito.core)
+    }
+    add(releasedBenchmark.name, "dev.brikk.chill:chill-opensearch-plugin:0.1.0")
+    add(benchmark.annotationProcessorConfigurationName, libs.jmh.generator)
+}
+tasks.register<JavaExec>("benchmark") {
+    group = "verification"
+    description = "Runs local JMH scoring benchmarks against synthetic Lucene doc values (no cluster)"
+    dependsOn(tasks.named(benchmark.classesTaskName))
+    classpath = if (providers.gradleProperty("benchmarkReleased").isPresent) files(benchmark.output, releasedBenchmark) else benchmark.runtimeClasspath
+    mainClass.set("org.openjdk.jmh.Main")
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(providers.gradleProperty("benchmarkJava").orElse("25").get()))
+    })
+    args("ScoringBenchmark", "-p", "binding=painless,painless_cached,direct,bound", "-p", "shape=narrow,wide12", "-p", "access=all", "-p", "missingPercent=0", "-prof", "gc", "-foe", "true")
+}
