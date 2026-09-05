@@ -238,6 +238,46 @@ q.functionScore { fs ->
 }
 ```
 
+### Script-field results
+
+On an `_search` request, `script_fields` computes extra values for returned hits during the fetch
+phase. It does not change scores or indexed documents. The field wrapper converts
+kotlinx-serializable objects to maps before handing them to OpenSearch:
+
+```kotlin
+@Serializable
+data class ReadSummary(val reads: Double, val weightedReads: Double)
+
+val summary = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d ->
+    ReadSummary(d.reads, d.reads * 0.25)
+}
+val request = SearchRequest.Builder()
+    .index("articles")
+    .chillScriptField("read_summary", summary)
+    .build()
+// A hit has fields.read_summary = [{"reads": 120.0, "weightedReads": 30.0}].
+// summary.evaluate(articleDoc) still returns ReadSummary locally.
+```
+
+The same conversion applies to inline and stored script fields. It follows the serializer's
+`@SerialName`, `@Transient`, enum names, nested types, and custom representations. Defaults and
+explicit nulls are included in object results, since response readers do not have the DTO's
+constructor defaults. Contextual `ZonedDateTime` properties use the existing ISO-string serializer.
+The serializer must be resolvable from the runtime class; a generic root DTO that needs erased
+type arguments requires a non-generic wrapper. Implementing `java.io.Serializable` alone is not
+enough for a custom result object.
+
+Objects nested in maps, collections, and reference arrays are converted recursively. Map keys must
+be non-null strings. Native OpenSearch values, including scalar numbers, strings, booleans, null,
+dates and supported primitive arrays, retain their existing representation. A top-level collection
+supplies multiple field values; reference arrays and native primitive arrays remain one array-valued
+field value. In particular, `ByteArray` stays binary and appears as base64 in the JSON response.
+
+Conversion runs inside the document's execution budget. Failures become `ScriptException` before
+the result leaves the field wrapper, so `ignore_failure: true` can omit that field. Scoring still
+returns a number and filtering still returns a boolean; neither uses this conversion. Ingestion
+contexts are not currently supported.
+
 ## 6. Stored scripts
 
 Same mechanism, zero plugin changes: a stored script is just `lang` + `source` kept in cluster

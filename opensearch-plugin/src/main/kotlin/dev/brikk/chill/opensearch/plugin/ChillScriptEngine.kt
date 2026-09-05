@@ -311,7 +311,18 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                 }.withoutScoreSlot(name, "filter"),
             )
 
-            FieldScript.CONTEXT -> fieldFactory(compileChill(name, code).withoutScoreSlot(name, "field"))
+            FieldScript.CONTEXT -> fieldFactory(
+                compileChill(name, code, null) { result ->
+                    try {
+                        ScriptResultCodec.encode(result)
+                    } catch (ex: Exception) {
+                        throw ScriptException(
+                            "chill script field result could not be serialized: ${ex.message}",
+                            ex, emptyList(), name ?: "<inline>", ChillOpenSearch.LANGUAGE,
+                        )
+                    }
+                }.withoutScoreSlot(name, "field"),
+            )
             else -> throw IllegalArgumentException("chill scripts are not supported for context [${context.name}]")
         }
         return context.factoryClazz.cast(factory)

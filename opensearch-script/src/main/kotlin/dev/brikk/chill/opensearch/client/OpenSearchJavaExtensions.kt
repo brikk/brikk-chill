@@ -59,7 +59,7 @@ fun ScriptScoreFunction.Builder.chill(script: ChillScript<Number>): ScriptScoreF
 /** `script` query (filter): the script must produce a boolean. */
 fun ScriptQuery.Builder.chill(script: ChillScript<Boolean>): ScriptQuery.Builder = script(script.toScript())
 
-/** `script_fields` entry: any result type. */
+/** `script_fields` entry: native OpenSearch values pass through; kotlinx-serializable objects become response maps. */
 fun SearchRequest.Builder.chillScriptField(name: String, script: ChillScript<*>): SearchRequest.Builder =
     scriptFields(name) { it.script(script.toScript()) }
 

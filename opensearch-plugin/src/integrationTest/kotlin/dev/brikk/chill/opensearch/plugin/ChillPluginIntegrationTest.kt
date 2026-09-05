@@ -427,6 +427,85 @@ class ChillPluginIntegrationTest {
     }
 
     @Test
+    fun scriptFieldsSerializeObjectsButKeepLocalResultsAndNativeResponseShapes() {
+        val template = ChillOpenSearch.bound(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { p, d ->
+            ReadSummary(d.reads + p.minReads, at = d.postedAt)
+        }
+        val ready = template.withParams(rankParams)
+        client.putChillScript("read-summary-v1", template)
+        val stored = template.stored("read-summary-v1").withParams(rankParams)
+        val nested = ChillOpenSearch.bound(@ChillLambda {
+            mapOf("items" to listOf(ReadSummary(12.0)), "kind" to SummaryKind.ARTICLE)
+        })
+        val list = ChillOpenSearch.bound(@ChillLambda { listOf(ReadSummary(12.0)) })
+        val array = ChillOpenSearch.bound(@ChillLambda { arrayOf(ReadSummary(12.0)) })
+        val binary = ChillOpenSearch.bound(@ChillLambda { byteArrayOf(1, 2) })
+        val primitive = ChillOpenSearch.bound(@ChillLambda { 7 })
+        val flag = ChillOpenSearch.bound(@ChillLambda { true })
+        val nothing = ChillOpenSearch.bound<String?>(@ChillLambda { null })
+        val custom = ChillOpenSearch.bound(@ChillLambda { CountedResult(3) })
+        val response = client.search(
+            SearchRequest.of { s ->
+                s.index(index).query(Query.of { it.ids { ids -> ids.values("fresh-weighted-topic") } })
+                    .chillScriptField("summary", ready)
+                    .chillScriptField("stored", stored)
+                    .chillScriptField("nested", nested)
+                    .chillScriptField("list", list)
+                    .chillScriptField("array", array)
+                    .chillScriptField("binary", binary)
+                    .chillScriptField("primitive", primitive)
+                    .chillScriptField("flag", flag)
+                    .chillScriptField("nothing", nothing)
+                    .chillScriptField("custom", custom)
+            },
+            Map::class.java,
+        )
+        val fields = response.hits().hits().single().fields()
+        val local: ReadSummary = ready.evaluate(ArticleDoc(reads = 900.0, postedAt = now.minusDays(1)))
+        assertEquals(ReadSummary(900.0 + rankParams.minReads, at = now.minusDays(1)), local)
+        assertEquals(local, stored.evaluate(ArticleDoc(reads = 900.0, postedAt = now.minusDays(1))))
+        val summary = fields["summary"]!!.toJson().asJsonArray().getJsonObject(0)
+        assertEquals(local.reads, summary.getJsonNumber("read_count").doubleValue())
+        assertEquals("article", summary.getString("kind"))
+        assertEquals(local.at.toString(), summary.getString("at"))
+        assertEquals("reads", summary.getJsonObject("details").getString("label"))
+        assertTrue(summary.getJsonObject("details").isNull("note"))
+        assertTrue(summary.getJsonObject("details").getJsonArray("tags").isEmpty())
+        assertTrue("hidden" !in summary)
+        assertEquals(fields["summary"]!!.toJson(), fields["stored"]!!.toJson())
+        val nestedValue = fields["nested"]!!.toJson().asJsonArray().getJsonObject(0)
+        assertEquals("article", nestedValue.getString("kind"))
+        assertEquals(12.0, nestedValue.getJsonArray("items").getJsonObject(0).getJsonNumber("read_count").doubleValue())
+        val listValue = fields["list"]!!.toJson().asJsonArray()
+        assertEquals(12.0, listValue.getJsonObject(0).getJsonNumber("read_count").doubleValue())
+        assertEquals(listValue, fields["array"]!!.toJson().asJsonArray().getJsonArray(0))
+        assertEquals("AQI=", fields["binary"]!!.toJson().asJsonArray().getString(0))
+        assertEquals(7, fields["primitive"]!!.toJson().asJsonArray().getInt(0))
+        assertTrue(fields["flag"]!!.toJson().asJsonArray().getBoolean(0))
+        assertTrue(fields["nothing"]!!.toJson().asJsonArray().isNull(0))
+        assertEquals(3, fields["custom"]!!.toJson().asJsonArray().getInt(0))
+    }
+
+    @Test
+    fun fieldSerializationFailuresAreScriptErrorsAndRespectIgnoreFailure() {
+        val notSerializable = ChillOpenSearch.bound(@ChillLambda { NotSerializableResult("no kotlinx serializer") })
+        val overBudget = ChillOpenSearch.bound(@ChillLambda { CountedResult(100_000) })
+        for ((script, message) in listOf(notSerializable to "NotSerializableResult", overBudget to "loop iterations")) {
+            fun search(ignoreFailure: Boolean) = client.search(
+                SearchRequest.of { s ->
+                    s.index(index).query(Query.of { it.ids { ids -> ids.values("fresh-weighted-topic") } })
+                        .scriptFields("bad") { it.script(script.toScript()).ignoreFailure(ignoreFailure) }
+                },
+                Map::class.java,
+            )
+            val ex = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { search(false) }
+            assertTrue("script_exception" in errorText(ex) && message in errorText(ex)) { errorText(ex) }
+            val ignored = search(true).hits().hits().single()
+            assertTrue("bad" !in ignored.fields())
+        }
+    }
+
+    @Test
     fun rejectionsSurfaceCleanlyOverHttp() {
         // violating inline script
         val permissive = setOf(
