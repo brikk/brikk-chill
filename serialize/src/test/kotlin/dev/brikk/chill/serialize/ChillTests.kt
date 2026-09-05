@@ -9,6 +9,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.io.Serializable
+import java.io.InvalidClassException
+import java.math.BigDecimal
+import java.math.BigInteger
+import java.util.Objects
 
 class MyReceiver(val score: Double, val doc: Map<String, String>) {
     fun docInt(field: String, default: Int): Int = doc[field]?.toInt() ?: default
@@ -75,6 +79,51 @@ class ChillTests : Serializable {
 
         val result = MyReceiver(41.5, emptyMap()).fn()
         assertEquals("score=41.5!", result)
+    }
+
+    @Test
+    fun capturedPrimitiveArraysAndNumericObjectsSurviveThaw() {
+        val values = listOf(
+            byteArrayOf(-1, 2), shortArrayOf(-3, 4), intArrayOf(-5, 6), longArrayOf(-7, 8),
+            floatArrayOf(1.5f, -2.5f), doubleArrayOf(3.5, -4.5), charArrayOf('a', 'z'),
+            booleanArrayOf(true, false), ByteArray(0), arrayOf("one", "two"),
+            BigInteger("12345678901234567890"), BigDecimal("1234567890.0123456789"),
+        )
+        for (captured in values) {
+            val frozen = chill.serializeLambdaToBase64<MyReceiver, Any>(@ChillLambda { captured })
+            val data = chill.deserFromPrefixedBase64<MyReceiver, Any>(frozen)
+            val shippedPolicies = data.classes.map {
+                PolicyAllowance.ClassLevel.ClassAccess(it.className, setOf(AccessTypes.ref_Class_Instance))
+            }.toPolicy().toSet()
+            val loader = BytesClassLoader(data.classes, javaClass.classLoader)
+            val fn = chill.instantiateSerializedLambdaSafely<MyReceiver, Any>(
+                data.className, data.serializedLambda, loader, shippedPolicies,
+            )
+            val result = MyReceiver(0.0, emptyMap()).fn()
+            assertTrue(Objects.deepEquals(captured, result)) { "capture changed: ${captured.javaClass.name}" }
+        }
+    }
+
+    @Test
+    fun primitiveArraysStillRespectThawLengthLimits() {
+        val limited = Chill(chill.verifier, thawLimits = Chill.ThawLimits(maxArrayLength = 2))
+        for (size in listOf(2, 3)) {
+            val captured = IntArray(size) { it + 10 }
+            val frozen = limited.serializeLambdaToBase64<MyReceiver, Any>(@ChillLambda { captured })
+            val data = limited.deserFromPrefixedBase64<MyReceiver, Any>(frozen)
+            val shippedPolicies = data.classes.map {
+                PolicyAllowance.ClassLevel.ClassAccess(it.className, setOf(AccessTypes.ref_Class_Instance))
+            }.toPolicy().toSet()
+            val loader = BytesClassLoader(data.classes, javaClass.classLoader)
+            if (size == 2) {
+                val fn = limited.instantiateSerializedLambdaSafely<MyReceiver, Any>(data.className, data.serializedLambda, loader, shippedPolicies)
+                assertTrue(Objects.deepEquals(captured, MyReceiver(0.0, emptyMap()).fn()))
+            } else {
+                assertThrows<InvalidClassException> {
+                    limited.instantiateSerializedLambdaSafely<MyReceiver, Any>(data.className, data.serializedLambda, loader, shippedPolicies)
+                }
+            }
+        }
     }
 
     @Test

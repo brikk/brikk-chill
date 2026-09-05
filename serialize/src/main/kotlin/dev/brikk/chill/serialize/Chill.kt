@@ -547,8 +547,11 @@ class Chill(
                     return@ObjectInputFilter ObjectInputFilter.Status.REJECTED
                 }
                 val clazz = info.serialClass() ?: return@ObjectInputFilter ObjectInputFilter.Status.UNDECIDED
-                val name = generateSequence(clazz) { it.componentType }.last().name
-                if (verifier.verifyClassNamesAgainstPolicies(listOf(name), additionalPolicies).failed) {
+                val component = generateSequence(clazz) { it.componentType }.last()
+                // Primitive array descriptors are policy-checked by readClassDescriptor; their
+                // component names ("int", "byte", ...) are not class names in that policy.
+                if (component.isPrimitive) return@ObjectInputFilter ObjectInputFilter.Status.ALLOWED
+                if (verifier.verifyClassNamesAgainstPolicies(listOf(component.name), additionalPolicies).failed) {
                     ObjectInputFilter.Status.REJECTED
                 } else {
                     ObjectInputFilter.Status.ALLOWED
