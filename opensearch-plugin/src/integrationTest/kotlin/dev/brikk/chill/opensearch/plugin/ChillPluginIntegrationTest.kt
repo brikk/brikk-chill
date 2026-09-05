@@ -396,6 +396,22 @@ class ChillPluginIntegrationTest {
     }
 
     @Test
+    fun scoreNumberConversionPreservesPrimitiveValuesAndRuntimeTypeChecks() {
+        val cases = listOf(
+            ChillOpenSearch.script<Any>(@ChillLambda { 7 }) to 7.0,
+            ChillOpenSearch.script<Any>(@ChillLambda { 7L }) to 7.0,
+            ChillOpenSearch.script<Any>(@ChillLambda { 7.5f }) to 7.5,
+            ChillOpenSearch.script<Any>(@ChillLambda { 7.5 }) to 7.5,
+        )
+        for ((script, expected) in cases) {
+            assertEquals(setOf(expected), scriptScoreSearch(script.toScript()).hits().hits().map { it.score()!! }.toSet())
+        }
+        val wrong = ChillOpenSearch.script<Any>(@ChillLambda { "not a number" })
+        val invalid = assertThrows<org.opensearch.client.opensearch._types.OpenSearchException> { scriptScoreSearch(wrong.toScript()) }
+        assertTrue("must return a number" in errorText(invalid)) { errorText(invalid) }
+    }
+
+    @Test
     fun filterAndFieldContextsWork() {
         // filter: script query (FilterScript context)
         val filter = ChillOpenSearch.script(docType<ArticleDoc>()) @ChillLambda { d -> d.reads > 500.0 }

@@ -300,7 +300,10 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
     ): FactoryType {
         val factory: Any = when (context) {
             ScoreScript.CONTEXT -> scoreFactory(
-                compileChill(name, code, Number::class) { result ->
+                compileChill<Number>(name, code, Number::class) { result ->
+                    // Preserve an existing Double box. Other Number conversions still run inside
+                    // the execution budget; the factory only unboxes the resulting native Double.
+                    if (result is Double) return@compileChill result
                     (result as? Number)?.toDouble() ?: wrongType(name, code, "a number", result)
                 },
             )
@@ -353,7 +356,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
         return this
     }
 
-    private fun scoreFactory(compiled: CompiledChillScript<Double>): ScoreScript.Factory =
+    private fun scoreFactory(compiled: CompiledChillScript<Number>): ScoreScript.Factory =
         ScoreScript.Factory { params: Map<String, Any>?, lookup: SearchLookup?, indexSearcher: IndexSearcher? ->
             val decodedParams = compiled.decodeParams(params ?: emptyMap())
             object : ScoreScript.LeafFactory {
@@ -374,7 +377,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                             inputs.doc = docs
                             inputs.score = score
                             val receiver = if (compiled.needsReceiver) ChillSearchScript(getParams(), docs, score) else null
-                            return compiled.execute(fn, receiver, inputs)
+                            return compiled.execute(fn, receiver, inputs).toDouble()
                         }
                     }
                 }
