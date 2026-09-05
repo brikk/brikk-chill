@@ -26,6 +26,7 @@ import org.opensearch.script.ScriptEngine
 import org.opensearch.script.ScriptException
 import org.opensearch.search.lookup.LeafSearchLookup
 import org.opensearch.search.lookup.SearchLookup
+import org.opensearch.search.lookup.SourceLookup
 import kotlin.jvm.javaObjectType
 import kotlin.reflect.KClass
 
@@ -342,13 +343,11 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
 
                 override fun newInstance(ctx: LeafReaderContext): ScoreScript {
                     val fn = compiled.instantiate()
-                    val sourceLeaf: LeafSearchLookup? =
-                        if (compiled.needsSource) lookup!!.getLeafSearchLookup(ctx) else null
-                    val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams; it.source = sourceLeaf?.let { l -> { sourceMap(l) } } }
+                    val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams }
                     return object : ScoreScript(params, lookup, indexSearcher, ctx) {
-                        override fun setDocument(docid: Int) {
-                            super.setDocument(docid)
-                            sourceLeaf?.setDocument(docid)
+                        init {
+                            // the script's own leaf lookup publishes _source into params; no second lookup
+                            if (compiled.needsSource) inputs.source = sourceFromParams(getParams())
                         }
 
                         override fun execute(explanation: ExplanationHolder?): Double {
@@ -369,6 +368,8 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
             val decodedParams = compiled.decodeParams(params ?: emptyMap())
             FilterScript.LeafFactory { ctx: LeafReaderContext ->
                 val fn = compiled.instantiate()
+                // FilterScript keeps its leaf lookup private and does not publish _source into
+                // params, so a source-bound filter is the one case needing a second leaf lookup
                 val sourceLeaf: LeafSearchLookup? =
                     if (compiled.needsSource) lookup!!.getLeafSearchLookup(ctx) else null
                 val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams; it.source = sourceLeaf?.let { l -> { sourceMap(l) } } }
@@ -393,13 +394,10 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
             val decodedParams = compiled.decodeParams(params ?: emptyMap())
             FieldScript.LeafFactory { ctx: LeafReaderContext ->
                 val fn = compiled.instantiate()
-                val sourceLeaf: LeafSearchLookup? =
-                    if (compiled.needsSource) lookup!!.getLeafSearchLookup(ctx) else null
-                val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams; it.source = sourceLeaf?.let { l -> { sourceMap(l) } } }
+                val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams }
                 object : FieldScript(params, lookup, ctx) {
-                    override fun setDocument(docid: Int) {
-                        super.setDocument(docid)
-                        sourceLeaf?.setDocument(docid)
+                    init {
+                        if (compiled.needsSource) inputs.source = sourceFromParams(getParams())
                     }
 
                     override fun execute(): Any? {
@@ -414,4 +412,18 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
 
     @Suppress("UNCHECKED_CAST")
     private fun sourceMap(leaf: LeafSearchLookup): Map<String, Any?> = leaf.source() as Map<String, Any?>
+
+    /**
+     * `_source` as ScoreScript/FieldScript expose it through their own leaf lookup: `params` is a
+     * `DynamicMap` whose `_source` entry loads the current document's source on read, so the read
+     * happens per document, inside the provider.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun sourceFromParams(params: Map<String, Any?>): () -> Map<String, Any?> = {
+        when (val v = params["_source"]) {
+            is SourceLookup -> v.loadSourceIfNeeded() as Map<String, Any?>
+            is Map<*, *> -> v as Map<String, Any?>
+            else -> throw IllegalStateException("script params carry no _source lookup")
+        }
+    }
 }

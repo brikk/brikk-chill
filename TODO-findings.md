@@ -201,8 +201,11 @@ Done:
       dispatch on `p.size`, a per-leaf reusable `Inputs` cell instead of a list per document, and
       no `ChillSearchScript` built for bound scripts (`needsReceiver`). Arity 4 (params+doc+source
       +score) now dispatches too.
-- [ ] `newInstance` creates a second `LeafSearchLookup` for source (`ChillScriptEngine.kt:297`)
-      rather than reusing the script's own leaf lookup.
+- [x] Second `LeafSearchLookup` for `_source`: Score and Field scripts now read `_source` from
+      their own leaf lookup via the `params` `DynamicMap` (per document, inside the provider);
+      `FilterScript` keeps its lookup private and publishes no `_source`, so a source-bound filter
+      is the one case that still takes its own. `sourceType` had no integration coverage; added
+      one across all three contexts, including original tag order from `_source`.
 - [ ] Serializer resolution at compile executes shipped `Companion.serializer()` and `<clinit>`.
       Verified code, but design §6/§7 say "before anything executes". Adjust wording (or see #2,
       which removes the companion call).

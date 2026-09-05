@@ -11,6 +11,7 @@ import dev.brikk.chill.opensearch.docType
 import dev.brikk.chill.opensearch.paramOf
 import dev.brikk.chill.opensearch.paramType
 import dev.brikk.chill.opensearch.scoreType
+import dev.brikk.chill.opensearch.sourceType
 import dev.brikk.chill.opensearch.storedChillScript
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
@@ -75,6 +76,14 @@ class NullableParams(val floor: Double? = 5.0, val label: String? = null)
 /** `tags` is a multi-valued keyword: doc values arrive sorted and de-duplicated. */
 @Serializable
 class TaggedDoc(val tags: List<String> = emptyList(), @SerialName("read_count") val reads: Double = 0.0)
+
+/** `_source` binding: the raw indexed document, including tags in their original order. */
+@Serializable
+class ArticleSource(
+    @SerialName("read_count") val reads: Double = 0.0,
+    val tags: List<String> = emptyList(),
+    @SerialName("author_id") val authorId: Long = 0,
+)
 
 @Serializable
 class NeedsMissingField(
@@ -670,5 +679,38 @@ class ChillPluginIntegrationTest {
             Map::class.java,
         ).hits().hits().first()
         assertEquals("old-weighted-topic", viaScriptScore.id())
+    }
+
+    @Test
+    fun sourceBindingWorksInScoreFilterAndFieldContexts() {
+        val byId = fixtures.associateBy { it.id }
+
+        // score: doc values and _source together, plus the base score
+        val score = ChillOpenSearch.bound(docType<ArticleDoc>(), sourceType<ArticleSource>(), scoreType()) @ChillLambda { d, s, base ->
+            base * d.reads + s.tags.size * 1000.0
+        }
+        val scores = scriptScoreSearch(score.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        fixtures.forEach { f ->
+            val local = score.evaluate(ArticleDoc(reads = f.reads, postedAt = now), ArticleSource(tags = f.tags), 1.0)
+            assertEquals(local.asIndexScore(), scores.getValue(f.id)) { "source-bound score for ${f.id}" }
+        }
+
+        // filter: _source only (FilterScript has no _source in params; the engine takes its own leaf lookup)
+        val filter = ChillOpenSearch.bound(sourceType<ArticleSource>()) @ChillLambda { s -> "evergreen" in s.tags || s.authorId == 777L }
+        val filtered = client.search(
+            SearchRequest.of { q -> q.index(index).query(Query.of { it.script { sq -> sq.chill(filter) } }) },
+            Map::class.java,
+        ).hits().hits().map { it.id() }.toSet()
+        assertEquals(fixtures.filter { filter.evaluate(ArticleSource(tags = it.tags, authorId = it.authorId)) }.map { it.id }.toSet(), filtered)
+
+        // field: _source keeps original tag order (contrast with the sorted doc values)
+        val order = ChillOpenSearch.bound(sourceType<ArticleSource>()) @ChillLambda { s -> s.tags.joinToString("|") }
+        val fields = client.search(
+            SearchRequest.of { q -> q.index(index).size(10).query(Query.of { it.matchAll { m -> m } }).chillScriptField("order", order) },
+            Map::class.java,
+        ).hits().hits().associate { it.id() to it.fields()["order"]!!.toJson().asJsonArray().getString(0) }
+        assertEquals("zeta|alpha|zeta|mid", fields.getValue("unsorted-tags"))
+        fixtures.forEach { f -> assertEquals(order.evaluate(ArticleSource(tags = f.tags)), fields.getValue(f.id)) }
+        assertEquals(byId.size, fields.size)
     }
 }
