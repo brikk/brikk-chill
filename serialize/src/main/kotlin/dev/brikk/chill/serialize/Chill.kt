@@ -1,11 +1,10 @@
 package dev.brikk.chill.serialize
 
-import dev.brikk.chill.policy.ALL_CLASS_ACCESS_TYPES
-import dev.brikk.chill.quarantine.ClassAllowanceDetector
 import dev.brikk.chill.quarantine.DebugInfoStripper
 import dev.brikk.chill.quarantine.LambdaVerificationManifest
 import dev.brikk.chill.quarantine.NamedClassBytes
 import dev.brikk.chill.quarantine.Quarantine
+import dev.brikk.chill.quarantine.ShipClosure
 import dev.brikk.chill.quarantine.VerificationCache
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -353,8 +352,8 @@ class Chill(
         slots: List<SlotDescriptor>,
         additionalPolicies: Set<String> = emptySet(),
         /**
-         * Extra classes to verify and ship alongside the lambda (e.g. bound slot classes or
-         * helper classes that are not nested relatives of the lambda's declaring class).
+         * Extra roots to verify and ship alongside the lambda (e.g. bound slot classes or
+         * captured runtime types not referenced directly by the lambda's bytecode).
          */
         shipClasses: List<Class<*>> = emptyList(),
         lambda: Any,
@@ -366,11 +365,6 @@ class Chill(
         val receiverClassName = lambdaReceiver.java.name
         val returnTypeClassName = lambdaReturnType.java.name
 
-        val classScanResults = ClassAllowanceDetector.scanClassByteCodeForDesiredAllowances(listOf(serClassBytes))
-        val accessedClassNames =
-            classScanResults.allowances.filter { allowance -> allowance.actions.any { it in ALL_CLASS_ACCESS_TYPES } }
-                .map { it.fqnTarget }.plus(className).toSet()
-
         // serialize the lambda instance while tracing every class in the captured object graph
         val classesIncludedInSerialization = mutableSetOf<Class<out Any>>()
         val serializedBytes = ByteArrayOutputStream().apply {
@@ -380,21 +374,11 @@ class Chill(
         }.toByteArray()
         val serializedClassNames = classesIncludedInSerialization.map { it.name }.toSet()
 
-        // take the starting lambda, and maybe its outer and inner classes but only if they are referenced
-        val outerClasses = generateSequence<Class<*>>(serClass) { seed -> seed.declaringClass.takeIf { it != seed } } +
-                generateSequence<Class<*>>(serClass) { seed -> seed.enclosingClass.takeIf { it != seed } }
-        val innerClasses = generateSequence<List<Class<*>>>(listOf<Class<*>>(serClass)) { seed ->
-            val l = seed.map { c -> c.classes.filterNot { it == c }.toList() }.flatten()
-            if (l.isEmpty()) null else l
-        }.flatten()
-        val shipClassBytes =
-            shipClasses.associate { it.name to NamedClassBytes.fromClassLoader(it.name, it.classLoader) }
-        val serClassRelatives = (innerClasses + outerClasses + serClass).map { it.name }.toSet() + shipClassBytes.keys
-
-        val classesToVerifyAndShip =
-            ((accessedClassNames + serializedClassNames + className).filter { it in serClassRelatives } + shipClassBytes.keys).distinct()
-
-        val serializedClassesToVerifyAccess = serializedClassNames.filterNot { it in serClassRelatives }
+        // Bytecode references include anonymous/local classes that reflection's member-class
+        // lists omit. Follow them transitively, stopping at policy-covered or foreign classes.
+        val classesToVerifyAndShip = ShipClosure(verifier, additionalPolicies).compute(listOf(serClass) + shipClasses)
+        val shippedNames = classesToVerifyAndShip.map { it.name }.toSet()
+        val serializedClassesToVerifyAccess = serializedClassNames.filterNot { it in shippedNames }
         val serializedClassVerificationResult =
             verifier.verifyClassNamesAgainstPolicies(serializedClassesToVerifyAccess, additionalPolicies)
         if (serializedClassVerificationResult.failed) {
@@ -404,12 +388,8 @@ class Chill(
             )
         }
 
-        val classesToVerifyAndShipAsBytes = classesToVerifyAndShip.map { name ->
-            when {
-                name == className -> serClassBytes
-                name in shipClassBytes -> shipClassBytes.getValue(name)
-                else -> NamedClassBytes.fromClassLoader(name, serClass.classLoader)
-            }
+        val classesToVerifyAndShipAsBytes = classesToVerifyAndShip.map { clazz ->
+            if (clazz == serClass) serClassBytes else NamedClassBytes.fromClassLoader(clazz.name, clazz.classLoader)
         }
 
         // When the build already verified this exact lambda class under the same policy, and the
