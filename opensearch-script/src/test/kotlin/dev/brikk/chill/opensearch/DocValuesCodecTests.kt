@@ -47,6 +47,21 @@ class DocValuesCodecTests {
     }
 
     @Test
+    fun nullablePropertiesAreOptionalAndDecodeAsNullWhenAbsent() {
+        @Serializable
+        class Optionalish(val reads: Double, val label: String?, val score: Double? = 1.0)
+
+        val decoded = DocValuesCodec.decode(serializer<Optionalish>(), mapOf("reads" to listOf(3.0)))
+        assertEquals(3.0, decoded.reads)
+        assertEquals(null, decoded.label) // nullable, no default, absent -> null, not MissingFieldException
+        assertEquals(null, decoded.score) // absent nullable decodes null even with a non-null default, as Json does
+
+        val present = DocValuesCodec.decode(serializer<Optionalish>(), mapOf("reads" to listOf(3.0), "label" to listOf("x"), "score" to listOf(2.0)))
+        assertEquals("x", present.label)
+        assertEquals(2.0, present.score)
+    }
+
+    @Test
     fun missingRequiredFieldNamesTheField() {
         val ex = assertThrows<MissingFieldException> {
             DocValuesCodec.decode(serializer<ArticleDoc>(), emptyMap())

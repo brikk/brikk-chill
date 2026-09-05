@@ -37,13 +37,31 @@ object ChillBound
  * A ready-to-run bound script. [evaluate] is the same lambda that was frozen, with any
  * `paramOf` value already applied, typed by the remaining slots in order: for
  * `bound(paramOf(p), docType<D>(), scoreType())` it is `(D, Double) -> R`. What the node computes
- * for a hit is what `evaluate` computes for the same document locally.
+ * for a hit is what `evaluate` computes for the same document locally, with two caveats that
+ * come from OpenSearch rather than chill:
+ *
+ *  - **Scores are float32.** A score-context result is stored by Lucene as a `float`, and
+ *    `hit.score()` is that float as it appears in the response JSON. `evaluate` returns the full
+ *    `double`; compare with [asIndexScore] (or a relative tolerance of ~1e-7) rather than for equality.
+ *  - **Doc values are sorted.** Multi-valued doc values arrive sorted (keywords also
+ *    de-duplicated), so a `List<T>` bound from `docType` sees sorted values while a locally
+ *    constructed instance holds `_source` order; bind from `sourceType` when order matters, or
+ *    construct local instances from the same sorted view.
  */
 class ChillBoundScript<out R, out E : Function<R>> internal constructor(
     source: String,
     params: Map<String, Any?>,
     val evaluate: E,
 ) : ChillScript<R>(source, params)
+
+/**
+ * The value a client reads back as `_score` for a score-context script that returned this number.
+ * Lucene keeps scores as `float`, and the response JSON carries that float in its shortest decimal
+ * form (`300.14285`, not the widened `300.1428527832031`), which the client parses as a double. So
+ * the round trip is float rounding followed by shortest-decimal re-parsing; this reproduces it
+ * exactly, letting a local `evaluate` result be compared to `hit.score()` for equality.
+ */
+fun Number.asIndexScore(): Double = toDouble().toFloat().toString().toDouble()
 
 /**
  * A reusable bound script with a declared params type. [evaluate] takes the params first

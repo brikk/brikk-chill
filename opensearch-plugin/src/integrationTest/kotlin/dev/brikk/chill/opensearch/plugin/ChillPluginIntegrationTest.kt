@@ -2,6 +2,7 @@ package dev.brikk.chill.opensearch.plugin
 
 import dev.brikk.chill.opensearch.ChillOpenSearch
 import dev.brikk.chill.opensearch.ChillSearchScript
+import dev.brikk.chill.opensearch.asIndexScore
 import dev.brikk.chill.opensearch.client.putChillScript
 import dev.brikk.chill.opensearch.client.toScript
 import dev.brikk.chill.opensearch.docType
@@ -64,6 +65,14 @@ class ArticleWithUnmappedField(
     @SerialName("read_count") val reads: Double = 0.0,
     @SerialName("bonus_multiplier") val bonus: Double = 1.5,
 )
+
+/** Nullable params: an explicit null must reach the node as null, not fall back to the default. */
+@Serializable
+class NullableParams(val floor: Double? = 5.0, val label: String? = null)
+
+/** `tags` is a multi-valued keyword: doc values arrive sorted and de-duplicated. */
+@Serializable
+class TaggedDoc(val tags: List<String> = emptyList(), @SerialName("read_count") val reads: Double = 0.0)
 
 @Serializable
 class NeedsMissingField(
@@ -153,6 +162,17 @@ class ChillPluginIntegrationTest {
             topicId = 5,
             ageHours = 12,
             tags = listOf("misc")
+        ),
+        Fixture(
+            "unsorted-tags",
+            popularity = 1.0,
+            reads = 100.0,
+            words = 1000.0,
+            featured = 0,
+            authorId = 4,
+            topicId = 7,
+            ageHours = 24 * 200,
+            tags = listOf("zeta", "alpha", "zeta", "mid")
         ),
         Fixture(
             "penalized-author",
@@ -264,7 +284,7 @@ class ChillPluginIntegrationTest {
 
         assertEquals(fixtures.size, scoresById.size)
         fixtures.forEach { f ->
-            assertEquals(expectedScore(f), scoresById.getValue(f.id), 1e-5) { "score mismatch for ${f.id}" }
+            assertEquals(expectedScore(f).asIndexScore(), scoresById.getValue(f.id)) { "score mismatch for ${f.id}" }
         }
         // weighted+fresh outranks the penalized author despite lower engagement
         val ranked = response.hits().hits().map { it.id() }
@@ -306,7 +326,7 @@ class ChillPluginIntegrationTest {
         val response = scriptScoreSearch(ref.withParams(rankParams).toScript())
         val scoresById = response.hits().hits().associate { it.id() to it.score()!! }
         fixtures.forEach { f ->
-            assertEquals(expectedScore(f), scoresById.getValue(f.id), 1e-5)
+            assertEquals(expectedScore(f).asIndexScore(), scoresById.getValue(f.id))
         }
 
         // OpenSearch 3.x does NOT compile custom-language stored scripts at PUT time: a hostile
@@ -364,9 +384,9 @@ class ChillPluginIntegrationTest {
         }
 
         val scores = scriptScoreSearch(ready.toScript()).hits().hits().associate { it.id() to it.score()!! }
-        assertEquals(0.001, scores.getValue("penalized-author"), 1e-6) { "captured set must hide author 777" }
-        assertEquals(10.0, scores.getValue("fresh-weighted-topic"), 1e-6) { "reads 900 >= captured 500" }
-        assertEquals(1.0, scores.getValue("fresh-other-topic"), 1e-6) { "reads 300 < captured 500" }
+        assertEquals(0.001.asIndexScore(), scores.getValue("penalized-author")) { "captured set must hide author 777" }
+        assertEquals(10.0, scores.getValue("fresh-weighted-topic")) { "reads 900 >= captured 500" }
+        assertEquals(1.0, scores.getValue("fresh-other-topic")) { "reads 300 < captured 500" }
 
         // different captured values -> different source (distinct scripts to the compile cache)
         val otherHidden = setOf(1L)
@@ -379,7 +399,7 @@ class ChillPluginIntegrationTest {
         }
         assertTrue(ready.source != ready2.source)
         val scores2 = scriptScoreSearch(ready2.toScript()).hits().hits().associate { it.id() to it.score()!! }
-        assertEquals(0.001, scores2.getValue("fresh-weighted-topic"), 1e-6) { "captured set now hides author 1" }
+        assertEquals(0.001.asIndexScore(), scores2.getValue("fresh-weighted-topic")) { "captured set now hides author 1" }
     }
 
     @Test
@@ -480,7 +500,7 @@ class ChillPluginIntegrationTest {
 
         assertEquals(localScores.keys, remoteScores.keys)
         localScores.forEach { (id, localScore) ->
-            assertEquals(localScore, remoteScores.getValue(id), 1e-3) { "local/remote score mismatch for $id" }
+            assertEquals(localScore.asIndexScore(), remoteScores.getValue(id)) { "local/remote score mismatch for $id" }
         }
     }
 
@@ -496,7 +516,7 @@ class ChillPluginIntegrationTest {
 
         assertEquals(local.keys, remote.keys)
         local.forEach { (id, score) ->
-            assertEquals(score, remote.getValue(id), 1e-3) { "unmapped-field default must apply server side for $id" }
+            assertEquals(score.asIndexScore(), remote.getValue(id)) { "unmapped-field default must apply server side for $id" }
         }
         // receiver helpers on an unmapped field: default, not an error
         val helper = ChillOpenSearch.script(@ChillLambda { doubleVal("bonus_multiplier", 42.0) })
@@ -528,7 +548,7 @@ class ChillPluginIntegrationTest {
             n + d.reads
         }
         val scores = scriptScoreSearch(bounded.toScript()).hits().hits().associate { it.id() to it.score()!! }
-        assertEquals(10_000.0 + 900.0, scores.getValue("fresh-weighted-topic"), 1e-3)
+        assertEquals(10_000.0 + 900.0, scores.getValue("fresh-weighted-topic"))
 
         // catastrophic backtracking: cut off by the regex limit factor
         val victim = "a".repeat(40) + "!"
@@ -558,7 +578,7 @@ class ChillPluginIntegrationTest {
             f.id to stored.evaluate(ArticleDoc(f.popularity, f.reads, f.words, f.featured, f.authorId, f.topicId, now.minusHours(f.ageHours)), 1.0)
         }
         assertEquals(local.keys, remote.keys)
-        local.forEach { (id, score) -> assertEquals(score, remote.getValue(id), score * 1e-6) { "stored bound mismatch for $id" } }
+        local.forEach { (id, score) -> assertEquals(score.asIndexScore(), remote.getValue(id)) { "stored bound mismatch for $id" } }
 
         // a bound filter (Boolean) and a bound field (String) run in their contexts too
         val filter = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d -> d.featured == 1L && d.words >= 1000 }
@@ -567,5 +587,45 @@ class ChillPluginIntegrationTest {
             Map::class.java,
         ).hits().hits().map { it.id() }.toSet()
         assertEquals(fixtures.filter { filter.evaluate(ArticleDoc(featured = it.featured, words = it.words, postedAt = now)) }.map { it.id }.toSet(), filtered)
+    }
+
+    @Test
+    fun parityCaveatsAreExactlyAsDocumented() {
+        // 1. explicit null param reaches the node as null (floor default is 5.0; we send null)
+        val nullAware = ChillOpenSearch.bound(paramType<NullableParams>(), docType<ArticleDoc>()) @ChillLambda { p, d ->
+            if (p.floor == null) 1.0 else if (d.reads >= p.floor) 2.0 else 0.5
+        }
+        val sentNull = nullAware.withParams(NullableParams(floor = null))
+        assertTrue(sentNull.params.containsKey("floor") && sentNull.params["floor"] == null) { sentNull.params.toString() }
+        val nullScores = scriptScoreSearch(sentNull.toScript()).hits().hits().map { it.score()!! }.toSet()
+        assertEquals(setOf(1.0), nullScores) { "null must not be replaced by the default 5.0 on the node" }
+        // and when omitted, the default applies on both sides
+        val defaulted = nullAware.withParams(NullableParams())
+        val expected = fixtures.associate { f -> f.id to defaulted.evaluate(ArticleDoc(reads = f.reads, postedAt = now)) }
+        val actual = scriptScoreSearch(defaulted.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        assertEquals(expected, actual)
+
+        // 2. multi-valued keyword doc values: sorted + de-duplicated, unlike _source order
+        val joined = ChillOpenSearch.bound(docType<TaggedDoc>()) @ChillLambda { d -> d.tags.joinToString("|") }
+        val fromNode = client.search(
+            SearchRequest.of { s ->
+                s.index(index).query(Query.of { it.ids { i -> i.values("unsorted-tags") } })
+                    .scriptFields("t") { sf -> sf.script(joined.toScript()) }
+            },
+            Map::class.java,
+        ).hits().hits().first().fields()["t"]!!.toJson().asJsonArray().getString(0)
+        val sourceOrder = fixtures.first { it.id == "unsorted-tags" }.tags
+        assertEquals("zeta|alpha|zeta|mid", joined.evaluate(TaggedDoc(tags = sourceOrder)))
+        assertEquals("alpha|mid|zeta", fromNode)
+        assertEquals(fromNode, joined.evaluate(TaggedDoc(tags = sourceOrder.toSortedSet().toList()))) { "parity holds on the sorted, de-duplicated view" }
+
+        // 3. scores are float32: exact equality holds only after asIndexScore()
+        val precise = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d -> d.reads / 3.0 + 1.0 / 7.0 }
+        val remote = scriptScoreSearch(precise.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        fixtures.forEach { f ->
+            val local = precise.evaluate(ArticleDoc(reads = f.reads, postedAt = now))
+            assertTrue(local != remote.getValue(f.id) || local == local.asIndexScore()) { "double-vs-float difference expected for ${f.id}" }
+            assertEquals(local.asIndexScore(), remote.getValue(f.id)) { "exact after float rounding for ${f.id}" }
+        }
     }
 }

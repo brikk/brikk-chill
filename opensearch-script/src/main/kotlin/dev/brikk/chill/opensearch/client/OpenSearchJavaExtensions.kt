@@ -3,6 +3,7 @@ package dev.brikk.chill.opensearch.client
 import dev.brikk.chill.opensearch.ChillScript
 import dev.brikk.chill.opensearch.ChillScriptTemplate
 import dev.brikk.chill.opensearch.ChillStoredScript
+import jakarta.json.JsonValue
 import org.opensearch.client.json.JsonData
 import org.opensearch.client.opensearch.OpenSearchClient
 import org.opensearch.client.opensearch._types.Script
@@ -17,8 +18,13 @@ import org.opensearch.client.opensearch.core.PutScriptResponse
 
 private val chillLanguage: ScriptLanguage = ScriptLanguage.of { it.custom(ChillScript.LANG) }
 
+/**
+ * An explicit `null` param is sent as JSON `null`, not dropped: dropping it would make the server
+ * apply the class default instead of the null the caller chose (`ParamsCodec` only emits keys the
+ * params class actually set, so every key here is intentional).
+ */
 private fun Map<String, Any?>.toJsonData(): Map<String, JsonData> =
-    entries.mapNotNull { (k, v) -> v?.let { k to JsonData.of(it) } }.toMap()
+    mapValues { (_, v) -> if (v == null) JsonData.of(JsonValue.NULL) else JsonData.of(v) }
 
 /** Inline script form: lang "chill", frozen source, encoded params. */
 fun ChillScript<*>.toScript(): Script = Script.of { s ->

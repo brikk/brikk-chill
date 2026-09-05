@@ -28,7 +28,10 @@ import java.time.ZonedDateTime
  *  - any other type mismatch: loud `SerializationException` with field, expected, and actual
  *  - date doc values bind to [ZonedDateTime] only (mark the property `@Contextual`);
  *    derivations (`toEpochSecond()` etc.) belong to the script
- *  - scalar property takes the first doc value; `List<T>` property takes all values
+ *  - a nullable property with no doc value decodes as `null` (nullable means optional)
+ *  - scalar property takes the first doc value; `List<T>` property takes all values. Doc values
+ *    are stored sorted (numerics/dates keep duplicates; keywords are also de-duplicated), so a
+ *    `List<T>` property sees sorted values, not `_source` order - use `sourceType` when order matters
  *  - nested classes are not supported (doc values are flat)
  */
 object DocValuesCodec {
@@ -90,9 +93,11 @@ object DocValuesCodec {
                 index++
                 if (index >= descriptor.elementsCount) return CompositeDecoder.DECODE_DONE
                 val name = descriptor.getElementName(index)
-                // missing/empty fields are skipped: kotlinx applies the property default, or
-                // raises MissingFieldException for required properties
-                if (doc.docValues(name).isNotEmpty()) return index
+                // present: decode it. Missing and nullable: decode as null (a nullable property is
+                // optional, as with Json's explicitNulls=false, and as a locally constructed
+                // instance with a null would be). Missing otherwise: skip, so kotlinx applies the
+                // default or raises MissingFieldException naming the field.
+                if (doc.docValues(name).isNotEmpty() || descriptor.getElementDescriptor(index).isNullable) return index
             }
         }
 

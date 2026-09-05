@@ -88,6 +88,11 @@ templates are `ChillBoundTemplate<P, R, E, B>` (`evaluate(params, ...)`, `withPa
 `stored(id)` whose `withParams` keeps `evaluate`). Any slot combination and any `R` work: a
 `Boolean` bound script is a filter, a `String` one a script field.
 
+Two parity caveats come from OpenSearch itself: scores are float32 and arrive as the float's
+shortest decimal form (`Number.asIndexScore()` reproduces the round trip exactly for comparisons),
+and multi-valued doc values are sorted. Explicit `null` params are sent as JSON `null`, never
+dropped, so the node sees the null the caller chose rather than the class default.
+
 Bound classes may reference other user types (enums, nested `@Serializable` classes); the ship
 set is the transitive closure of what the policy does not cover (`ShipClosure`). Generic bound
 types are refused at the slot: the payload carries a class name only and the node could not
@@ -189,7 +194,8 @@ class ArticleDoc(
 | numeric doc value into wider/narrower numeric property | `Number` widening/narrowing silently (Long→Double etc.) |
 | any other type mismatch | loud `SerializationException` with field, expected, actual |
 | date doc value | binds to **`ZonedDateTime` only** (the native doc-values type). Derivations (`.toEpochSecond()`, `.toInstant()`) are the script's business. No implicit `Long` epoch binding — no hidden unit conventions. |
-| scalar property vs list doc value | scalar takes first value; `List<T>` property takes all |
+| nullable property, field absent | `null` (nullable means optional, as with `Json`'s `explicitNulls=false`) |
+| scalar property vs list doc value | scalar takes first value; `List<T>` property takes all, in doc-values order: sorted, keywords de-duplicated (use `sourceType` for `_source` order) |
 
 Decode costs: params decode **once per query** (at factory creation); doc decodes per document;
 source decodes per document *and* forces `_source` loading — supported, documented as expensive.

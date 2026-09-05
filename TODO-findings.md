@@ -150,22 +150,23 @@ descriptor shape with the reified serializer; mismatch or failure throws
 `IllegalArgumentException` at the slot naming the class and the reason. Contextual and
 collection-typed properties pass.
 
-### [ ] 8. Local/remote parity caveats not surfaced
+### [x] 8. Local/remote parity caveats not surfaced
 
-Will bite anyone using `evaluate` as a reranker against objects built from `_source`:
+Two were behaviour bugs, two were OpenSearch facts that needed to be stated and made testable:
 
-- [ ] Lucene scores are float32; `hit.score()` is a widened float. Test tolerances (1e-3, 1e-5)
-      are quietly papering over this. Either document, or have `evaluate` offer a
-      `toFloat().toDouble()` mode when parity is the goal.
-- [ ] Multi-valued numeric doc values come back sorted; keyword doc values sorted *and*
-      deduplicated. `List<T>` doc-bound properties won't match `_source` order.
-- [ ] `val x: String?` with no default is *required* in a custom kotlinx decoder (only `Json` has
-      `explicitNulls=false`). Users expect nullable to mean optional. Supportable in
-      `decodeElementIndex`: return the index for missing nullable elements and let
-      `decodeNotNullMark()` return false.
-- [ ] `toJsonData()` (`opensearch-script/.../client/OpenSearchJavaExtensions.kt:21`) drops
-      null-valued params, so an explicit `null` becomes "absent" and the server applies the class
-      default instead. Use `JsonData.of(JsonValue.NULL)` or equivalent.
+- [x] Nullable = optional. `val x: String?` with no default was *required* by the doc decoder.
+      `decodeElementIndex` now yields absent nullable elements so they decode as `null`, matching
+      `Json`'s `explicitNulls=false` and a locally constructed instance.
+- [x] Explicit `null` params were dropped by `toJsonData()`, so the node applied the class default.
+      Now sent as JSON `null`. Integration test: `floor = null` scores as null on the node, and the
+      omitted case defaults identically on both sides.
+- [x] Scores are float32, and the client reads the float's *shortest decimal form* from the JSON
+      (`300.14285`), not the widened double. `Number.asIndexScore()` reproduces that exact round
+      trip; every integration assertion now compares with equality instead of a tolerance (the
+      old 1e-3 / 1e-5 tolerances were hiding this).
+- [x] Multi-valued doc values are sorted (keywords also de-duplicated). Documented on
+      `ChillBoundScript` and `DocValuesCodec`; integration test shows `_source` order
+      `zeta|alpha|zeta|mid` vs node `alpha|mid|zeta`, and parity on the sorted view.
 
 ### [ ] 9. `ChillScript<out R>` is phantom for `script()`
 
