@@ -83,9 +83,10 @@ object DocValuesCodec {
 
         private var rootDescriptor: SerialDescriptor? = null
         private var index = -1
+        private var currentValues: List<Any?>? = null
 
         override fun fieldName(): String = rootDescriptor?.getElementName(index) ?: "<root>"
-        private fun values(): List<Any?> = doc.docValues(fieldName())
+        private fun values(): List<Any?> = currentValues ?: doc.docValues(fieldName())
         override fun rawValue(): Any? = values().firstOrNull()
 
         override fun decodeElementIndex(descriptor: SerialDescriptor): Int {
@@ -97,7 +98,13 @@ object DocValuesCodec {
                 // optional, as with Json's explicitNulls=false, and as a locally constructed
                 // instance with a null would be). Missing otherwise: skip, so kotlinx applies the
                 // default or raises MissingFieldException naming the field.
-                if (doc.docValues(name).isNotEmpty() || descriptor.getElementDescriptor(index).isNullable) return index
+                val values = doc.docValues(name)
+                if (values.isNotEmpty() || descriptor.getElementDescriptor(index).isNullable) {
+                    // LeafDocLookup.get reloads doc values even on a cache hit. Keep the field
+                    // selected by the presence check for scalar reads, null probes and lists.
+                    currentValues = values
+                    return index
+                }
             }
         }
 
