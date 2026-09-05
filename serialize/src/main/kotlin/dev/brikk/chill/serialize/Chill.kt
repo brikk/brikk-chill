@@ -258,6 +258,18 @@ class Chill(
                 if (!java.security.MessageDigest.isEqual(sentSig.toByteArray(), calcSig.toByteArray())) {
                     throw ClassSerDesException("Serialized classes signature is not valid")
                 }
+                // the sender already filtered policy-covered classes out of the ship set, so a
+                // shipped class whose name the policy covers (kotlin.collections.Evil) is never
+                // legitimate: it is at best noise and at worst an impersonation of a trusted class.
+                // Reject rather than silently drop it.
+                val impersonating = classes.map { it.className } - verifier.filterKnownClasses(classes, additionalPolicies).map { it.className }
+                if (impersonating.isNotEmpty()) {
+                    throw ClassSerDerViolationsException(
+                        "Shipped classes use names reserved by policy: ${impersonating.sorted().joinToString()}",
+                        impersonating.map { "$it shipped under a policy-covered name" }.toSet(),
+                    )
+                }
+
                 val verification = verifier.verifyClassAgainstPolicies(classes, additionalPolicies)
                 if (verification.failed) {
                     throw ClassSerDerViolationsException(

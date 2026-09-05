@@ -3,6 +3,7 @@ package dev.brikk.chill.serialize
 import dev.brikk.chill.policy.AccessTypes
 import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.policy.toPolicy
+import dev.brikk.chill.quarantine.NamedClassBytes
 import dev.brikk.chill.quarantine.Quarantine
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -44,6 +45,45 @@ class HardeningTests {
             Chill(quarantine()).deserFromPrefixedBase64<MyReceiver, Any>(payload)
         }
         assertTrue("exceeds remaining payload" in ex.message!!) { "expected length guard, got: ${ex.message}" }
+    }
+
+    @Test
+    fun shippedClassUnderAPolicyCoveredNameIsRejectedNotDropped() {
+        // a harmless class body shipped under a name the policy already trusts, correctly signed
+        // with the public default key (which is what any sender can do)
+        val realBytes = NamedClassBytes.fromClassLoader(MyReceiver::class.java.name, MyReceiver::class.java.classLoader).bytes
+        val impostor = "kotlin.collections.CollectionsKt"
+        val receiver = MyReceiver::class.java.name
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply {
+            init(javax.crypto.spec.SecretKeySpec("ChillWitMeLambda".toByteArray(), "HmacSHA256"))
+        }
+        listOf(impostor, receiver, "java.lang.Object", impostor).forEach { mac.update(it.toByteArray()) }
+        mac.update(realBytes)
+        mac.update(ByteArray(0))
+        val sig = mac.doFinal().joinToString("") { "%02X".format(it) }
+
+        val content = ByteArrayOutputStream().apply {
+            DataOutputStream(this).use { stream ->
+                stream.writeUTF("x9a0K1")
+                stream.writeInt(3)
+                stream.writeUTF(impostor)
+                stream.writeUTF(receiver)
+                stream.writeUTF("java.lang.Object")
+                stream.writeInt(0) // slots
+                stream.writeInt(1) // one class
+                stream.writeUTF(impostor)
+                stream.writeInt(realBytes.size)
+                stream.write(realBytes)
+                stream.writeInt(0) // instance bytes
+                stream.writeUTF(sig)
+            }
+        }.toByteArray()
+
+        val chill = Chill(Quarantine(Quarantine.painlessPlusKotlinFullPolicy + receiverPolicies))
+        val ex = assertThrows<Chill.ClassSerDerViolationsException> {
+            chill.deserFromPrefixedBase64<MyReceiver, Any>(Chill.encodeEnvelope(content))
+        }
+        assertTrue(impostor in ex.message!! && "reserved" in ex.message!!) { ex.message }
     }
 
     @Test

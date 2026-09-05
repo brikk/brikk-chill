@@ -209,9 +209,10 @@ Done:
 - [x] Wording: §6 now says "before any shipped class is defined"; §7 flow names the
       instrumenter step and states that serializer resolution runs shipped `<clinit>` /
       `Companion.serializer()` (verified and instrumented) once per compile.
-- [ ] `requireSealed = false` packages + `filterKnownClasses` means a shipped class named e.g.
-      `kotlin.collections.Evil` is silently dropped rather than rejected. Not exploitable (it
-      can't load), but a shipped class landing in an allowed package should be a hard error.
+- [x] A shipped class whose name the policy covers (`kotlin.collections.CollectionsKt`) is now
+      rejected at thaw ("names reserved by policy") instead of silently dropped. The sender never
+      ships such classes legitimately (its ship set is already filtered), so the only way to see
+      one is a hand-built envelope. Hardening test builds and signs one with the public key.
 - [ ] Design doc drift (`docs/opensearch-scripting-design.md`):
   - no mention of `boundScore` / `ChillBoundScript` / `scoreType()` (the primary example)
   - `ChillSearchScript` is a final class, not `abstract`
