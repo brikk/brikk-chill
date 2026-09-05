@@ -1,16 +1,24 @@
 plugins {
     id("chill-kotlin-library")
     alias(libs.plugins.kotlin.serialization)
+    `java-test-fixtures` // RankParams / ArticleDoc shared by the unit and integration suites
 }
 
 dependencies {
     api(project(":opensearch-script"))
     compileOnly(libs.opensearch.server)
 
+    testFixturesImplementation(project(":opensearch-script"))
+    testImplementation(testFixtures(project(":opensearch-plugin")))
     testImplementation(libs.opensearch.server)
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
+
+// the fixtures are for this build's own suites; keep them out of the published component
+val javaComponent = components["java"] as AdhocComponentWithVariants
+javaComponent.withVariantsFromConfiguration(configurations["testFixturesApiElements"]) { skip() }
+javaComponent.withVariantsFromConfiguration(configurations["testFixturesRuntimeElements"]) { skip() }
 
 description = "OpenSearch plugin executing chill-verified serialized Kotlin lambdas as scripts (score/filter/field contexts)"
 

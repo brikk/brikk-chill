@@ -219,7 +219,10 @@ Done:
       are now in the suite: captured `var` (`Ref.DoubleRef`) ships and reads on the node; captured
       `java.io.File` rejected at freeze with `java.io File` in `violations`; `_score` from a
       `constant_score` base is seen by a reading script and 0.0 for a bound script without the slot.
-- [ ] `RankParams` / `ArticleDoc` duplicated between `test` and `integrationTest` source sets.
+- [x] `RankParams` / `ArticleDoc` now live once in `opensearch-plugin/src/testFixtures`
+      (`java-test-fixtures`; the fixtures variant is skipped from publishing). Side benefit: the
+      bound classes now ship from a different output directory than the lambdas, exercising the
+      ship path across the user's own modules.
 
 ## What's solid (no action)
 
