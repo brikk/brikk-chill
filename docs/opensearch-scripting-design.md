@@ -55,19 +55,25 @@ default); the representative two-class bound script is ~10 KB.
 ### Types
 
 ```kotlin
-class ChillScript internal constructor(
+open class ChillScript<out R>(              // R = the lambda's reified result type
     val source: String,               // the chill~~<base64> payload
     val params: Map<String, Any?>,    // kotlinx-encoded from the params instance (empty if unbound)
 ) {
     companion object { const val LANG = "chill" }
 }
 
-class ChillScriptTemplate<P : Any> internal constructor(
+open class ChillScriptTemplate<P : Any, out R>(
     val source: String,
-    internal val paramsSerializer: KSerializer<P>,
+    val paramsSerializer: KSerializer<P>,
 ) {
-    fun withParams(params: P): ChillScript
+    open fun withParams(params: P): ChillScript<R>
 }
+
+// bound variants (see below) subclass these and add `evaluate`:
+class ChillBoundScript<out R, out E : Function<R>> : ChillScript<R>            // evaluate: E
+class ChillBoundTemplate<P : Any, out R, out E : Function<R>, out B : Function<R>> : ChillScriptTemplate<P, R>
+class ChillStoredScriptRef<P : Any>(val id: String, ...) { fun withParams(p: P): ChillStoredScript }
+class ChillStoredScript(val id: String, val params: Map<String, Any?>)
 ```
 
 ### Bound scripts: the same lambda locally and on the node
@@ -139,12 +145,13 @@ The receiver stays the one common, unbound context — near-native OpenSearch fe
 which slots are bound:
 
 ```kotlin
-abstract class ChillSearchScript {
-    val doc: Map<String, List<Any?>>     // raw doc values, doc["field"]
-    val params: Map<String, Any?>        // raw script params
-    val _score: Double                   // score context only; 0.0 elsewhere
-    // old-style map helpers: doc.doubleVal("f", 0.0), doc.stringVals("tags"),
-    // params.intVal("floor", 0), asList<T>(), asValue<T>() ...
+class ChillSearchScript(
+    val params: Map<String, Any?>,       // raw script params
+    val doc: Map<String, List<Any?>>,    // raw doc values, doc["field"] (throws for unmapped, like Painless)
+    val _score: Double,                  // score context only; 0.0 elsewhere
+) {
+    // helpers tolerate unmapped fields: doubleVal("f", 0.0), stringVals("tags"),
+    // paramInt("floor", 0), asList<T>(), asValue<T>() ...
 }
 ```
 
@@ -245,11 +252,15 @@ per query):
 client.putChillScript("score-creator-band-v1", template)   // PUT _scripts/score-creator-band-v1
 
 // reference per query with typed params
-val ref: ChillScriptRef = storedChillScript("score-creator-band-v1", paramType<RankParams>())
-FunctionScore.Builder().chill(ref.withParams(ranking)).build()
+val ref: ChillStoredScriptRef<RankParams> = storedChillScript("score-creator-band-v1", paramType<RankParams>())
+q.scriptScore { ss -> ss.chill(ref.withParams(ranking)) }
+
+// or keep the evaluator: a bound template's stored form reranks locally with the same lambda
+val stored = boundTemplate.stored("score-creator-band-v1").withParams(ranking)
+stored.evaluate(articleDoc, 1.0)
 ```
 
-`ChillScriptRef.withParams` produces the stored-reference form of the client `Script`
+`ChillStoredScriptRef.withParams` produces the stored-reference form of the client `Script`
 (id + params) rather than inline source. Storing a *ready* script is deliberately not offered:
 stored + baked params is a footgun (two sources of params truth).
 
@@ -323,14 +334,15 @@ Cases (a representative ranking function):
    decay, threshold gates → assert exact scores against the same math computed in the test
 2. **template + withParams**: same source, two param sets, assert both orderings; assert the
    source strings are identical (compile-cache guarantee)
-3. **stored script**: PUT template, query by ref with typed params; assert rejection at PUT time
-   for a policy-violating payload (store-time verification)
+3. **stored script**: PUT template, query by ref with typed params; a policy-violating stored
+   payload is rejected at first use (OpenSearch 3.x does not compile custom languages at PUT)
 4. **doc binding**: `@SerialName` renames, missing-field defaults, `MissingFieldException` surface
    for a missing required field, ZonedDateTime binding + epoch math
 5. **filter + field contexts**: boolean filter script; script field returning a computed string
 6. **rejections end-to-end**: violating lambda → HTTP error carrying violation strings; tampered
    payload → integrity error; non-chill source → usage guidance
-7. **needs_score**: `_score`-using script vs not, asserted via explain or behavior
+7. **needs_score**: `_score`-reading script sees the base query's score (constant_score 2.5);
+   a bound script without a score slot gets 0.0
 8. **captured values** (closure state, not slot inputs):
    - captured primitive and String used in ranking math (`val floor = 5; ... { d -> if (d.views < floor) ... }`)
      → asserted in real query results
@@ -341,11 +353,19 @@ Cases (a representative ranking function):
      serialization-trace violation naming the class
    - two freezes with different captured values → different sources (compile-cache identity
      documented behavior, contrast with the template test in case 2)
+9. **execution limits**: runaway loop and regex bomb fail the document with the limit named;
+   node setting for the loop budget is honoured
+10. **bound + stored**: bound template registered, queried by id, reranked locally with `evaluate`;
+    bound `Boolean` filter; typed client extensions build a `function_score`
+11. **parity caveats**: explicit null param reaches the node; sorted/deduped keyword doc values
+    vs `_source` order; float32 score round trip exact via `asIndexScore()`
+12. **`_source` binding** in score, filter and field contexts
 
 ## 10. Decisions log (gaps filled; flag any for veto)
 
 - Slot function names: `paramOf(value)`, `paramType<P>()`, `docType<D>()`, `sourceType<S>()` (as specified)
-- Result type names: `ChillScript`, `ChillScriptTemplate<P>`, `ChillScriptRef` (stored reference)
+- Result type names: `ChillScript<R>`, `ChillScriptTemplate<P, R>`, `ChillBoundScript` /
+  `ChillBoundTemplate`, `ChillStoredScriptRef<P>` / `ChillStoredScript` (stored reference)
 - Entry point: `ChillOpenSearch.script(...)` returning the above; `scriptSource()` string-only form
   remains for non-opensearch-java clients (it is just `ChillScript.source`)
 - Dates: `ZonedDateTime` required; `Instant` NOT auto-converted after all — one canonical type,

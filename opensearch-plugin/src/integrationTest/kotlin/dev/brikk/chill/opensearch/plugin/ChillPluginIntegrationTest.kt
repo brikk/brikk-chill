@@ -713,4 +713,45 @@ class ChillPluginIntegrationTest {
         fixtures.forEach { f -> assertEquals(order.evaluate(ArticleSource(tags = f.tags)), fields.getValue(f.id)) }
         assertEquals(byId.size, fields.size)
     }
+
+    @Test
+    fun captureEdgeCasesFromTheDesignDoc() {
+        // captured mutable local: kotlinc wraps it in a kotlin.jvm.internal.Ref.DoubleRef, which
+        // must ship, thaw, and read on the node (writes stay local to each leaf instance)
+        var threshold = 400.0
+        threshold += 100.0
+        val mutable = ChillOpenSearch.script(docType<ArticleDoc>()) @ChillLambda { d -> if (d.reads >= threshold) 2.0 else 1.0 }
+        val scores = scriptScoreSearch(mutable.toScript()).hits().hits().associate { it.id() to it.score()!! }
+        fixtures.forEach { f -> assertEquals(if (f.reads >= 500.0) 2.0 else 1.0, scores.getValue(f.id)) { f.id } }
+
+        // captured non-policy object: rejected at freeze, client side, naming the class
+        val handle = java.io.File("/etc/hosts")
+        val ex = assertThrows<Chill.ClassSerDerViolationsException> {
+            ChillOpenSearch.script(docType<ArticleDoc>()) @ChillLambda { d -> if (handle.exists()) d.reads else 0.0 }
+        }
+        assertTrue(ex.violations.any { it.startsWith("java.io File") }) { ex.violations.toString() }
+    }
+
+    @Test
+    fun needsScoreIsDerivedFromWhatTheScriptReads() {
+        // a base query with a deterministic non-1.0 score: a script reading _score sees it; a bound
+        // script with no score slot gets 0.0 from the engine and never asks Lucene to compute one
+        val base = Query.of { q ->
+            q.constantScore { cs -> cs.filter(Query.of { f -> f.term { t -> t.field("tags").value { v -> v.stringValue("howto") } } }).boost(2.5f) }
+        }
+        fun run(script: org.opensearch.client.opensearch._types.Script) = client.search(
+            SearchRequest.of { s -> s.index(index).query(Query.of { q -> q.scriptScore { ss -> ss.query(base).script(script) } }) },
+            Map::class.java,
+        ).hits().hits().associate { it.id() to it.score()!! }
+
+        val usesScore = ChillOpenSearch.script(@ChillLambda { _score * 10.0 })
+        val ignoresScore = ChillOpenSearch.script(@ChillLambda { _score + 7.0 })
+        val boundNoScore = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { _ -> 3.0 }
+
+        val withScore = run(usesScore.toScript())
+        assertEquals(setOf("fresh-weighted-topic", "old-weighted-topic"), withScore.keys)
+        assertEquals(setOf(25.0), withScore.values.toSet()) { "expected constant 2.5 x 10, got $withScore" }
+        assertEquals(setOf(9.5), run(ignoresScore.toScript()).values.toSet())
+        assertEquals(setOf(3.0), run(boundNoScore.toScript()).values.toSet())
+    }
 }

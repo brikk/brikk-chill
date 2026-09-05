@@ -213,13 +213,12 @@ Done:
       rejected at thaw ("names reserved by policy") instead of silently dropped. The sender never
       ships such classes legitimately (its ship set is already filtered), so the only way to see
       one is a hand-built envelope. Hardening test builds and signs one with the public key.
-- [ ] Design doc drift (`docs/opensearch-scripting-design.md`):
-  - no mention of `boundScore` / `ChillBoundScript` / `scoreType()` (the primary example)
-  - `ChillSearchScript` is a final class, not `abstract`
-  - `ChillScript` is `open`, doc says final
-  - `ChillScriptRef` vs actual `ChillStoredScriptRef` / `ChillStoredScript`
-  - §9 item 7 (needs_score via explain), the `var` -> `Ref` capture case, and the `File` capture
-    rejection case are not in the integration suite
+- [x] Design doc drift: §2 types now match the code (`ChillScript<R>`, bound/stored variants),
+      `ChillSearchScript` shown as the final class it is, `ChillStoredScriptRef` naming, §6 stored
+      rejection timing, §9 case list extended to the 15 integration cases. The three missing cases
+      are now in the suite: captured `var` (`Ref.DoubleRef`) ships and reads on the node; captured
+      `java.io.File` rejected at freeze with `java.io File` in `violations`; `_score` from a
+      `constant_score` base is seen by a reading script and 0.0 for a bound script without the slot.
 - [ ] `RankParams` / `ArticleDoc` duplicated between `test` and `integrationTest` source sets.
 
 ## What's solid (no action)
