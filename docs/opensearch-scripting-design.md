@@ -211,6 +211,23 @@ The same format runs in reverse for `ChillScript.params`: the params instance is
 to the `Map<String, Any?>` OpenSearch expects, so one `@Serializable` class defines the contract
 on both ends (no hand-built `mapOf(... JsonData.of(...))` transcription).
 
+On decode, `ParamsCodec` avoids constructing a JSON tree for compiler-generated records and
+standard lists, sets, maps, and reference arrays. It feeds the existing kotlinx deserializer
+directly from the wire values, retaining immutable scalars but constructing fresh output containers.
+Input validation still covers the entire tree before any user deserializer runs, including ignored
+fields; non-string map keys retain the existing stringification behavior.
+
+Custom serializers, polymorphic values, aliases, inline/value-class cases, and existing `JsonElement`
+inputs use the JSON path at the relevant serializer boundary. Selection happens before invoking the
+serializer: an exception never causes a user deserializer to be executed a second time. Numeric
+coercions that depend on JSON's textual representation also use the original JSON scalar decoder.
+This preserves, for example, quoted-number handling and Float-to-Double decimal roundtrips.
+Detailed JSON error paths on a fallback may be relative to that subtree rather than the whole input.
+
+This optimization affects query-parameter materialization and `_source` decoding, not the frozen
+payload format, client encoding, or local bound evaluation. `WorkloadBenchmark.querySetup` measures
+its cost independently of document scoring; see [local benchmarks](local-scoring-benchmarks.md).
+
 ## 5. Client extensions (opensearch-java)
 
 The lambda's result type `R` is reified into `ChillScript<R>` and recorded in the payload. Both

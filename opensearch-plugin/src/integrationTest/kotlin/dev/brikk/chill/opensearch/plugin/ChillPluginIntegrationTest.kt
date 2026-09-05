@@ -55,6 +55,14 @@ class ArticleWithUnmappedField(
 @Serializable
 class NullableParams(val floor: Double? = 5.0, val label: String? = null)
 
+@Serializable
+data class CompoundParams(
+    val table: Map<String, Double>,
+    val buckets: Map<Int, List<Long?>>,
+    val labels: Set<String> = emptySet(),
+    val note: String? = "default",
+)
+
 /** `tags` is a multi-valued keyword: doc values arrive sorted and de-duplicated. */
 @Serializable
 class TaggedDoc(val tags: List<String> = emptyList(), @SerialName("read_count") val reads: Double = 0.0)
@@ -282,6 +290,30 @@ class ChillPluginIntegrationTest {
         // weighted+fresh outranks the penalized author despite lower engagement
         val ranked = response.hits().hits().map { it.id() }
         assertTrue(ranked.indexOf("fresh-weighted-topic") < ranked.indexOf("penalized-author"))
+    }
+
+    @Test
+    fun compoundParametersDecodeCompletelyForInlineAndStoredQueries() {
+        val template = ChillOpenSearch.bound(paramType<CompoundParams>()) @ChillLambda { p ->
+            p.table.values.sum() + p.buckets.values.sumOf { it.filterNotNull().sum().toDouble() } +
+                p.labels.size + if (p.note == null) 0.0 else 1.0
+        }
+        client.putChillScript("compound-params-v1", template)
+        val first = CompoundParams(
+            (0 until 1024).associate { it.toString() to (it + 1) * 0.25 },
+            mapOf(1 to listOf(2L, null, 3L), 2 to listOf(7L)), setOf("a", "b"), null,
+        )
+        val second = first.copy(table = mapOf("only" to 2.5), note = "present")
+        for (params in listOf(first, second)) {
+            val expected = (params.table.values.sum() + 12.0 + 2.0 + if (params.note == null) 0.0 else 1.0).asIndexScore()
+            val ready = template.withParams(params)
+            assertEquals(expected, ready.evaluate().asIndexScore())
+            val scripts = listOf(ready.toScript(), template.stored("compound-params-v1").withParams(params).toScript())
+            for (script in scripts) {
+                val scores = scriptScoreSearch(script).hits().hits().map { it.score()!! }.toSet()
+                assertEquals(setOf(expected), scores)
+            }
+        }
     }
 
     @Test
