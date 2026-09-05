@@ -80,38 +80,50 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
             slots.firstOrNull { it.kind == ChillSlot.KIND_PARAMS }
                 ?.let { ParamsCodec.decodeFromMap(it.deserializer!!, params) }
 
-        /**
-         * Invokes the lambda for one document: builds slot arguments in declared order and
-         * dispatches on arity (`R.(A...) -> T` is `Function{1+n}`). Each call arms the
-         * per-execution loop budget; an exhausted limit surfaces as a [ScriptException].
-         */
-        @Suppress("UNCHECKED_CAST")
-        fun execute(
-            fn: Any,
-            receiver: ChillSearchScript,
-            decodedParams: Any?,
-            doc: Map<String, List<Any?>>,
-            sourceProvider: (() -> Map<String, Any?>)?,
-            score: Double = 0.0,
-        ): R {
-            val args = slots.map { slot ->
-                when (slot.kind) {
-                    ChillSlot.KIND_PARAMS -> decodedParams
-                    ChillSlot.KIND_DOC -> DocValuesCodec.decode(slot.deserializer!!, doc)
-                    ChillSlot.KIND_SOURCE -> ParamsCodec.decodeFromMap(
-                        slot.deserializer!!,
-                        sourceProvider?.invoke()
-                            ?: throw IllegalStateException("source binding requires source access"),
-                    )
+        /** Per-document inputs; a mutable cell reused per leaf so execute() allocates nothing of its own. */
+        class Inputs {
+            @JvmField var decodedParams: Any? = null
+            @JvmField var doc: Map<String, List<Any?>> = emptyMap()
+            @JvmField var source: (() -> Map<String, Any?>)? = null
+            @JvmField var score: Double = 0.0
+        }
 
-                    ChillSlot.KIND_SCORE -> score
-                    else -> throw IllegalStateException("unknown slot kind ${slot.kind}")
+        /** True when the lambda runs against the contextual receiver and one must be built per document. */
+        val needsReceiver: Boolean = !boundReceiver
+
+        // resolved once per compile: one producer per slot, no per-document string dispatch
+        private val producers: Array<(Inputs) -> Any?> = slots.map { slot ->
+            when (slot.kind) {
+                ChillSlot.KIND_PARAMS -> { i: Inputs -> i.decodedParams }
+                ChillSlot.KIND_DOC -> { val d = slot.deserializer!!; { i: Inputs -> DocValuesCodec.decode(d, i.doc) } }
+                ChillSlot.KIND_SOURCE -> {
+                    val d = slot.deserializer!!
+                    { i: Inputs -> ParamsCodec.decodeFromMap(d, i.source?.invoke() ?: throw IllegalStateException("source binding requires source access")) }
                 }
+                ChillSlot.KIND_SCORE -> { i: Inputs -> i.score }
+                else -> throw IllegalStateException("unknown slot kind ${slot.kind}")
             }
-            val invocationReceiver: Any = if (boundReceiver) ChillBound else receiver
+        }.toTypedArray()
+
+        /**
+         * Invokes the lambda for one document with slot arguments in declared order
+         * (`R.(A...) -> T` is `Function{1+n}`). Arms the per-execution budget; an exhausted limit
+         * surfaces as a [ScriptException]. [receiver] may be null when [needsReceiver] is false.
+         */
+        fun execute(fn: Any, receiver: ChillSearchScript?, inputs: Inputs): R {
+            val r: Any = if (boundReceiver) ChillBound else receiver ?: throw IllegalStateException("contextual script needs a receiver")
+            val p = producers
             ExecutionBudget.begin(limits.maxLoopIterations, limits.maxAllocation)
             val result = try {
-                invoke(fn, invocationReceiver, args)
+                @Suppress("UNCHECKED_CAST")
+                when (p.size) {
+                    0 -> (fn as kotlin.jvm.functions.Function1<Any?, Any?>).invoke(r)
+                    1 -> (fn as kotlin.jvm.functions.Function2<Any?, Any?, Any?>).invoke(r, p[0](inputs))
+                    2 -> (fn as kotlin.jvm.functions.Function3<Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs))
+                    3 -> (fn as kotlin.jvm.functions.Function4<Any?, Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs), p[2](inputs))
+                    4 -> (fn as kotlin.jvm.functions.Function5<Any?, Any?, Any?, Any?, Any?, Any?>).invoke(r, p[0](inputs), p[1](inputs), p[2](inputs), p[3](inputs))
+                    else -> throw IllegalStateException("unsupported slot arity ${p.size}")
+                }
             } catch (ex: ChillExecutionLimitError) {
                 throw ScriptException(
                     "chill script exceeded an execution limit: ${ex.message}",
@@ -121,26 +133,15 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
             return decodeResult(result)
         }
 
-        @Suppress("UNCHECKED_CAST")
-        private fun invoke(fn: Any, invocationReceiver: Any, args: List<Any?>): Any? =
-            when (args.size) {
-                0 -> (fn as kotlin.jvm.functions.Function1<Any?, Any?>).invoke(invocationReceiver)
-                1 -> (fn as kotlin.jvm.functions.Function2<Any?, Any?, Any?>).invoke(invocationReceiver, args[0])
-                2 -> (fn as kotlin.jvm.functions.Function3<Any?, Any?, Any?, Any?>).invoke(
-                    invocationReceiver,
-                    args[0],
-                    args[1]
-                )
-
-                3 -> (fn as kotlin.jvm.functions.Function4<Any?, Any?, Any?, Any?, Any?>).invoke(
-                    invocationReceiver,
-                    args[0],
-                    args[1],
-                    args[2]
-                )
-
-                else -> throw IllegalStateException("unsupported slot arity ${args.size}")
-            }
+        /** Convenience for tests and one-off calls: builds an [Inputs] per call. */
+        fun execute(
+            fn: Any,
+            receiver: ChillSearchScript?,
+            decodedParams: Any?,
+            doc: Map<String, List<Any?>>,
+            sourceProvider: (() -> Map<String, Any?>)?,
+            score: Double = 0.0,
+        ): R = execute(fn, receiver, Inputs().also { it.decodedParams = decodedParams; it.doc = doc; it.source = sourceProvider; it.score = score })
     }
 
     fun compileChill(name: String?, code: String): CompiledChillScript<Any?> =
@@ -343,6 +344,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                     val fn = compiled.instantiate()
                     val sourceLeaf: LeafSearchLookup? =
                         if (compiled.needsSource) lookup!!.getLeafSearchLookup(ctx) else null
+                    val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams; it.source = sourceLeaf?.let { l -> { sourceMap(l) } } }
                     return object : ScoreScript(params, lookup, indexSearcher, ctx) {
                         override fun setDocument(docid: Int) {
                             super.setDocument(docid)
@@ -351,15 +353,11 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
 
                         override fun execute(explanation: ExplanationHolder?): Double {
                             val score = if (compiled.needsScore) get_score() else 0.0
-                            val receiver = ChillSearchScript(getParams(), docsOf(doc), score)
-                            return compiled.execute(
-                                fn,
-                                receiver,
-                                decodedParams,
-                                docsOf(doc),
-                                sourceLeaf?.let { { sourceMap(it) } },
-                                score
-                            )
+                            val docs = docsOf(doc)
+                            inputs.doc = docs
+                            inputs.score = score
+                            val receiver = if (compiled.needsReceiver) ChillSearchScript(getParams(), docs, score) else null
+                            return compiled.execute(fn, receiver, inputs)
                         }
                     }
                 }
@@ -373,6 +371,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                 val fn = compiled.instantiate()
                 val sourceLeaf: LeafSearchLookup? =
                     if (compiled.needsSource) lookup!!.getLeafSearchLookup(ctx) else null
+                val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams; it.source = sourceLeaf?.let { l -> { sourceMap(l) } } }
                 object : FilterScript(params, lookup, ctx) {
                     override fun setDocument(docid: Int) {
                         super.setDocument(docid)
@@ -380,13 +379,10 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                     }
 
                     override fun execute(): Boolean {
-                        val receiver = ChillSearchScript(getParams(), docsOf(doc), 0.0)
-                        return compiled.execute(
-                            fn,
-                            receiver,
-                            decodedParams,
-                            docsOf(doc),
-                            sourceLeaf?.let { { sourceMap(it) } })
+                        val docs = docsOf(doc)
+                        inputs.doc = docs
+                        val receiver = if (compiled.needsReceiver) ChillSearchScript(getParams(), docs, 0.0) else null
+                        return compiled.execute(fn, receiver, inputs)
                     }
                 }
             }
@@ -399,6 +395,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                 val fn = compiled.instantiate()
                 val sourceLeaf: LeafSearchLookup? =
                     if (compiled.needsSource) lookup!!.getLeafSearchLookup(ctx) else null
+                val inputs = CompiledChillScript.Inputs().also { it.decodedParams = decodedParams; it.source = sourceLeaf?.let { l -> { sourceMap(l) } } }
                 object : FieldScript(params, lookup, ctx) {
                     override fun setDocument(docid: Int) {
                         super.setDocument(docid)
@@ -406,13 +403,10 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                     }
 
                     override fun execute(): Any? {
-                        val receiver = ChillSearchScript(getParams(), docsOf(doc), 0.0)
-                        return compiled.execute(
-                            fn,
-                            receiver,
-                            decodedParams,
-                            docsOf(doc),
-                            sourceLeaf?.let { { sourceMap(it) } })
+                        val docs = docsOf(doc)
+                        inputs.doc = docs
+                        val receiver = if (compiled.needsReceiver) ChillSearchScript(getParams(), docs, 0.0) else null
+                        return compiled.execute(fn, receiver, inputs)
                     }
                 }
             }

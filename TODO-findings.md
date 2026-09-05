@@ -197,10 +197,10 @@ Done:
       or `ArrayList(n)` (both internal `anewarray`s live in the JDK, not in shipped code); the heap
       remains the backstop for those, as in Painless.
 
-- [ ] **Per-document hot path** (`ChillScriptEngine.kt:83-116`): `slots.map` allocates a list,
-      `when (slot.kind)` string-dispatches, and a `ChillSearchScript` is built even when
-      `boundReceiver` is true (`:306`, discarded at `:97`). Precompute an array of arg producers
-      and the invoke arity at compile time.
+- [x] Per-document hot path: slot producers resolved once per compile into an array, arity
+      dispatch on `p.size`, a per-leaf reusable `Inputs` cell instead of a list per document, and
+      no `ChillSearchScript` built for bound scripts (`needsReceiver`). Arity 4 (params+doc+source
+      +score) now dispatches too.
 - [ ] `newInstance` creates a second `LeafSearchLookup` for source (`ChillScriptEngine.kt:297`)
       rather than reusing the script's own leaf lookup.
 - [ ] Serializer resolution at compile executes shipped `Companion.serializer()` and `<clinit>`.
