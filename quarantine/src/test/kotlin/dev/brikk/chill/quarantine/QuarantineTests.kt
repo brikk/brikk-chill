@@ -7,6 +7,7 @@ import dev.brikk.chill.quarantine.fixtures.UnsafeOps
 import dev.brikk.chill.quarantine.fixtures.TypeAnnotatedOps
 import dev.brikk.chill.quarantine.fixtures.TypeMark
 import dev.brikk.chill.policy.AccessTypes
+import dev.brikk.chill.policy.ALL_PACKAGE_ACCESS_TYPES
 import dev.brikk.chill.policy.PolicyAllowance
 import dev.brikk.chill.policy.toPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -127,5 +128,18 @@ class QuarantineTests {
     fun verifyClassNames() {
         assertTrue(quarantine.verifyClassNamesAgainstPolicies(listOf("java.lang.String")).violations.isEmpty())
         assertTrue(quarantine.verifyClassNamesAgainstPolicies(listOf("java.io.File")).failed)
+    }
+
+    @Test
+    fun defaultPackageAllowanceMatchesReferencedClassesAndMethods() {
+        val lambda = @JvmSerializableLambda { SafeOps().combine("x", 2) }
+        val bytes = listOf(NamedClassBytes.fromLambda(lambda))
+        assertTrue(quarantine.verifyClassAgainstPolicies(bytes).failed)
+        val policy = listOf(
+            PolicyAllowance.PackageAccess("dev.brikk.chill.quarantine.fixtures", ALL_PACKAGE_ACCESS_TYPES),
+        ).toPolicy().toSet()
+        val allowed = quarantine.verifyClassAgainstPolicies(bytes, policy)
+        assertTrue(allowed.violations.isEmpty()) { allowed.violations.toString() }
+        assertTrue(quarantine.verifyClassNamesAgainstPolicies(listOf("java.io.File"), policy).failed)
     }
 }

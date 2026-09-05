@@ -1,9 +1,19 @@
 package dev.brikk.chill.policy
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 class PolicyFormatTests {
+    @Test
+    fun sealedPackageModeFailsExplicitlyInsteadOfProducingAnUnmatchablePolicy() {
+        val ex = assertThrows<IllegalArgumentException> {
+            PolicyAllowance.PackageAccess("com.test", ALL_PACKAGE_ACCESS_TYPES, requireSealed = true)
+        }
+        assertTrue("not supported" in ex.message!!)
+    }
+
     @Test
     fun testAllFormsOfPolicyItems() {
         val statements = listOf<PolicyAllowance>(
@@ -17,20 +27,20 @@ class PolicyFormatTests {
         )
 
         val expectedStrings = listOf(
-            "com.test.safe.stuff:sealed * call_Class_Constructor",
-            "com.test.safe.stuff:sealed * call_Class_Instance_Method",
-            "com.test.safe.stuff:sealed * call_Class_Static_Method",
-            "com.test.safe.stuff:sealed * read_Class_Instance_Field",
-            "com.test.safe.stuff:sealed * read_Class_Instance_Property",
-            "com.test.safe.stuff:sealed * read_Class_Static_Field",
-            "com.test.safe.stuff:sealed * read_Class_Static_Property",
-            "com.test.safe.stuff:sealed * ref_Class",
-            "com.test.safe.stuff:sealed * ref_Class_Instance",
-            "com.test.safe.stuff:sealed * ref_Class_Static",
-            "com.test.safe.stuff:sealed * write_Class_Instance_Field",
-            "com.test.safe.stuff:sealed * write_Class_Instance_Property",
-            "com.test.safe.stuff:sealed * write_Class_Static_Field",
-            "com.test.safe.stuff:sealed * write_Class_Static_Property",
+            "com.test.safe.stuff * call_Class_Constructor",
+            "com.test.safe.stuff * call_Class_Instance_Method",
+            "com.test.safe.stuff * call_Class_Static_Method",
+            "com.test.safe.stuff * read_Class_Instance_Field",
+            "com.test.safe.stuff * read_Class_Instance_Property",
+            "com.test.safe.stuff * read_Class_Static_Field",
+            "com.test.safe.stuff * read_Class_Static_Property",
+            "com.test.safe.stuff * ref_Class",
+            "com.test.safe.stuff * ref_Class_Instance",
+            "com.test.safe.stuff * ref_Class_Static",
+            "com.test.safe.stuff * write_Class_Instance_Field",
+            "com.test.safe.stuff * write_Class_Instance_Property",
+            "com.test.safe.stuff * write_Class_Static_Field",
+            "com.test.safe.stuff * write_Class_Static_Property",
             "com.test.stuff * call_Class_Constructor",
             "com.test.stuff * call_Class_Instance_Method",
             "com.test.stuff * call_Class_Static_Method",
