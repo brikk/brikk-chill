@@ -29,3 +29,8 @@ Install on each node, then restart OpenSearch:
 the published ZIP is byte-for-byte identical to the installable archive. Nothing is uploaded by
 that test. `./gradlew :opensearch-plugin:integrationTest` installs that archive in a real OpenSearch
 container and exercises score, filter, field, and stored scripts. The latter requires Docker.
+
+`./gradlew :opensearch-plugin:packagingTest` checks incremental builds in a temporary project copy.
+It runs the real-node suite, confirms an unchanged build skips it, then changes only the ZIP's
+permissions file and checks that the rebuilt archive is installed and tested again. It also requires
+Docker and runs as part of `check`.

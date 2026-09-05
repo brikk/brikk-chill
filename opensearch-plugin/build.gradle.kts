@@ -110,6 +110,7 @@ val integrationTestTask = tasks.register<Test>("integrationTest") {
     useJUnitPlatform()
 
     dependsOn(pluginZip)
+    inputs.file(pluginZip.flatMap { it.archiveFile }).withPathSensitivity(PathSensitivity.NONE)
     systemProperty("chill.plugin.zip", pluginZip.get().archiveFile.get().asFile.absolutePath)
     systemProperty("chill.opensearch.version", opensearchVersion)
 
@@ -122,4 +123,31 @@ val integrationTestTask = tasks.register<Test>("integrationTest") {
     }
 }
 
-tasks.named("check") { dependsOn(integrationTestTask) }
+val packagingTest = sourceSets.create("packagingTest")
+dependencies {
+    add(packagingTest.implementationConfigurationName, gradleTestKit())
+    add(packagingTest.implementationConfigurationName, libs.junit.jupiter)
+    add(packagingTest.runtimeOnlyConfigurationName, libs.junit.platform.launcher)
+}
+
+val packagingTestTask = tasks.register<Test>("packagingTest") {
+    group = "verification"
+    description = "Checks ZIP-only changes rerun real-node integration tests in an isolated project copy"
+    testClassesDirs = packagingTest.output.classesDirs
+    classpath = packagingTest.runtimeClasspath
+    useJUnitPlatform()
+    inputs.files(rootProject.fileTree(rootProject.projectDir) {
+        exclude("**/build/**", "**/.gradle/**", "**/.kotlin/**", ".git/**", ".idea/**")
+    }).withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("chill.project.root", rootProject.projectDir.absolutePath)
+    shouldRunAfter(integrationTestTask)
+    onlyIf("Docker is available") {
+        try {
+            ProcessBuilder("docker", "info").redirectErrorStream(true).start().waitFor() == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+}
+
+tasks.named("check") { dependsOn(integrationTestTask, packagingTestTask) }
