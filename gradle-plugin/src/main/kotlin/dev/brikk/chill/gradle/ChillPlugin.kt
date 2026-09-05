@@ -64,7 +64,7 @@ class ChillPlugin : Plugin<Project> {
             generateAll.configure { it.from(generate) }
         }
 
-        project.plugins.withId("java-base") {
+        project.plugins.withId("java") {
             val sourceSets = project.extensions.getByType(JavaPluginExtension::class.java).sourceSets
             sourceSets.named(SourceSet.MAIN_SOURCE_SET_NAME) { main ->
                 val verifyTask = project.tasks.register("chillVerifyLambdas", ChillVerifyLambdasTask::class.java) { task ->

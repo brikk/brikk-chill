@@ -14,7 +14,12 @@ class ChillPluginFunctionalTest {
     @TempDir
     lateinit var projectDir: File
 
-    private fun writeProject(lambdaBody: String, chillBlock: String = """policy.set("kotlin-bootstrap")""") {
+    private fun writeProject(
+        lambdaBody: String,
+        chillBlock: String = """policy.set("kotlin-bootstrap")""",
+        pluginBlock: String = """kotlin("jvm") version "2.4.10"
+            id("dev.brikk.chill")""",
+    ) {
         File(projectDir, "settings.gradle.kts").writeText(
             """
             pluginManagement {
@@ -29,8 +34,7 @@ class ChillPluginFunctionalTest {
         File(projectDir, "build.gradle.kts").writeText(
             """
             plugins {
-                kotlin("jvm") version "2.4.10"
-                id("dev.brikk.chill")
+                $pluginBlock
             }
             repositories { mavenCentral() }
             kotlin { jvmToolchain(21) }
@@ -95,6 +99,21 @@ class ChillPluginFunctionalTest {
         val result = runner("chillVerifyLambdas").buildAndFail()
         assertTrue("System.getenv" in result.output) { "expected violation detail in output" }
         assertTrue("violate the chill policy" in result.output)
+    }
+
+    @Test
+    fun chillAppliedBeforeKotlinStillVerifiesAndPackagesTheLambda() {
+        writeProject(""" "ok" + Math.max(1, 2) """, pluginBlock = """
+            id("dev.brikk.chill")
+            kotlin("jvm") version "2.4.10"
+        """.trimIndent())
+        val result = runner("build").build()
+        assertEquals(TaskOutcome.SUCCESS, result.task(":chillVerifyLambdas")!!.outcome)
+        java.util.zip.ZipFile(File(projectDir, "build/libs/chill-demo.jar")).use { zip ->
+            val manifest = zip.getInputStream(zip.getEntry("META-INF/chill/verified-lambdas.manifest"))
+                .bufferedReader().use { it.readText() }
+            assertTrue("demo.Scripts\$fn\$1" in manifest)
+        }
     }
 
     private val stdlibJarsFromRuntimeClasspath =
