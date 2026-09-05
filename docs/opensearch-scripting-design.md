@@ -206,23 +206,29 @@ on both ends (no hand-built `mapOf(... JsonData.of(...))` transcription).
 
 ## 5. Client extensions (opensearch-java)
 
-Small extension surface resolving the chain from `ChillScript` onward:
+The lambda's result type `R` is reified into `ChillScript<R>` and recorded in the payload. Both
+ends use it: the extensions below only accept a script whose `R` fits the context (compile error
+in the IDE otherwise), and the node re-checks the recorded type when it compiles the script, so a
+mismatch never reaches per-document execution.
 
 ```kotlin
 // conversion
-fun ChillScript.toScript(): org.opensearch.client.opensearch._types.Script   // inline, lang "chill"
+fun ChillScript<*>.toScript(): Script                       // inline, lang "chill", params
+fun ChillStoredScript.toScript(): Script                    // stored id + params
 
-// query construction
-fun ScriptScoreQuery.Builder.chill(script: ChillScript): ScriptScoreQuery.Builder
-fun FunctionScore.Builder.chill(script: ChillScript): FunctionScore.Builder
-fun SearchRequest.Builder.chillScriptField(name: String, script: ChillScript): SearchRequest.Builder
+// query construction, typed by result
+fun ScriptScoreQuery.Builder.chill(script: ChillScript<Number>): ScriptScoreQuery.Builder
+fun ScriptScoreFunction.Builder.chill(script: ChillScript<Number>): ScriptScoreFunction.Builder
+fun ScriptQuery.Builder.chill(script: ChillScript<Boolean>): ScriptQuery.Builder
+fun SearchRequest.Builder.chillScriptField(name: String, script: ChillScript<*>): SearchRequest.Builder
+// ... and the same four for ChillStoredScript
 ```
 
-Usage in a search-ranking-shaped call:
-
 ```kotlin
-val ready = template.withParams(rankingParams)
-FunctionScore.Builder().chill(ready).build()
+q.functionScore { fs ->
+    fs.query(Query.of { it.script { s -> s.chill(featuredOnly) } })   // ChillScript<Boolean>
+      .functions { f -> f.scriptScore { ss -> ss.chill(ranking) } }   // ChillScript<Double>
+}
 ```
 
 ## 6. Stored scripts

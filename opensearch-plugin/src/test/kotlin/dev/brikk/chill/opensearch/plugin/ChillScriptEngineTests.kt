@@ -109,6 +109,32 @@ class ChillScriptEngineTests {
     }
 
     @Test
+    fun resultTypeIsCheckedAtCompileAgainstTheContext() {
+        val text = ChillOpenSearch.script(@ChillLambda { "label:" + intVal("count") })
+        val number = ChillOpenSearch.script(@ChillLambda { intVal("count") * 1.5 })
+        val flag = ChillOpenSearch.script(@ChillLambda { intVal("count") > 2 })
+        val ints = ChillOpenSearch.script(@ChillLambda { intVal("count") })
+
+        // score wants a Number: Int and Double both qualify; String and Boolean fail at compile
+        engine.compile("ok-d", number.source, ScoreScript.CONTEXT, emptyMap())
+        engine.compile("ok-i", ints.source, ScoreScript.CONTEXT, emptyMap())
+        for (bad in listOf(text, flag)) {
+            val ex = assertThrows<ScriptException> { engine.compile("bad", bad.source, ScoreScript.CONTEXT, emptyMap()) }
+            assertTrue("this context needs Number" in ex.message!!) { ex.message }
+        }
+        // filter wants Boolean
+        engine.compile("ok-b", flag.source, FilterScript.CONTEXT, emptyMap())
+        val ex = assertThrows<ScriptException> { engine.compile("bad", number.source, FilterScript.CONTEXT, emptyMap()) }
+        assertTrue("this context needs Boolean" in ex.message!!) { ex.message }
+        // field takes anything
+        engine.compile("ok-f", text.source, FieldScript.CONTEXT, emptyMap())
+
+        // a lambda whose branches force an Any result is still allowed (checked per document)
+        val mixed = ChillOpenSearch.script<Any>(@ChillLambda { if (intVal("count") > 2) 1.0 else "nope" })
+        engine.compile("any", mixed.source, ScoreScript.CONTEXT, emptyMap())
+    }
+
+    @Test
     fun unsupportedContextIsRejected() {
         val script = ChillOpenSearch.script(@ChillLambda { 1 })
         assertThrows<IllegalArgumentException> {

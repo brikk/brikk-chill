@@ -3,6 +3,8 @@ package dev.brikk.chill.opensearch.plugin
 import dev.brikk.chill.opensearch.ChillOpenSearch
 import dev.brikk.chill.opensearch.ChillSearchScript
 import dev.brikk.chill.opensearch.asIndexScore
+import dev.brikk.chill.opensearch.client.chill
+import dev.brikk.chill.opensearch.client.chillScriptField
 import dev.brikk.chill.opensearch.client.putChillScript
 import dev.brikk.chill.opensearch.client.toScript
 import dev.brikk.chill.opensearch.docType
@@ -627,5 +629,46 @@ class ChillPluginIntegrationTest {
             assertTrue(local != remote.getValue(f.id) || local == local.asIndexScore()) { "double-vs-float difference expected for ${f.id}" }
             assertEquals(local.asIndexScore(), remote.getValue(f.id)) { "exact after float rounding for ${f.id}" }
         }
+    }
+
+    @Test
+    fun typedClientExtensionsBuildEveryContext() {
+        val score = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d -> d.reads / 100.0 }
+        val filter = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d -> d.featured == 1L }
+        val label = ChillOpenSearch.bound(docType<ArticleDoc>()) @ChillLambda { d -> "topic-" + d.topicId }
+        // These do not compile, by design (the result type picks the context):
+        //   q.scriptScore { it.chill(filter) }   // ChillScript<Boolean> is not a ChillScript<Number>
+        //   q.script { it.chill(score) }         // ChillScript<Double> is not a ChillScript<Boolean>
+
+        val response = client.search(
+            SearchRequest.of { s ->
+                s.index(index)
+                    .query(Query.of { q ->
+                        q.functionScore { fs ->
+                            fs.query(Query.of { qq -> qq.script { it.chill(filter) } })
+                                .functions { f -> f.scriptScore { ss -> ss.chill(score) } }
+                                .boostMode(org.opensearch.client.opensearch._types.query_dsl.FunctionBoostMode.Replace)
+                        }
+                    })
+                    .chillScriptField("label", label)
+            },
+            Map::class.java,
+        )
+        val hits = response.hits().hits()
+        assertEquals(fixtures.filter { it.featured == 1L }.map { it.id }.toSet(), hits.map { it.id() }.toSet())
+        hits.forEach { hit ->
+            val f = fixtures.first { it.id == hit.id() }
+            assertEquals(score.evaluate(ArticleDoc(reads = f.reads, postedAt = now)).asIndexScore(), hit.score()!!)
+            assertEquals("topic-${f.topicId}", hit.fields()["label"]!!.toJson().asJsonArray().getString(0))
+        }
+
+        // script_score query form, and a stored reference through the same extension
+        client.putChillScript("typed-ext-v1", ChillOpenSearch.bound(paramType<RankParams>(), docType<ArticleDoc>()) @ChillLambda { p, d -> d.reads * (1 + (p.topicWeights[d.topicId.toString()] ?: 0.0)) })
+        val stored = storedChillScript("typed-ext-v1", paramType<RankParams>()).withParams(rankParams)
+        val viaScriptScore = client.search(
+            SearchRequest.of { s -> s.index(index).query(Query.of { q -> q.scriptScore { ss -> ss.query(Query.of { it.matchAll { m -> m } }).chill(stored) } }) },
+            Map::class.java,
+        ).hits().hits().first()
+        assertEquals("old-weighted-topic", viaScriptScore.id())
     }
 }

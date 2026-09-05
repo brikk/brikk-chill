@@ -194,16 +194,26 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
                 ChillOpenSearch.LANGUAGE,
             )
         }
-        val untypedReturnName = Any::class.java.name
-        val expectedReturnName = expectedReturnType?.java?.name
-        if (expectedReturnName != null && data.returnTypeClassName != untypedReturnName && data.returnTypeClassName != expectedReturnName) {
-            throw ScriptException(
-                "chill script declares return type ${data.returnTypeClassName}, expected $expectedReturnName",
-                ClassCastException(),
-                emptyList(),
-                name ?: "<inline>",
-                ChillOpenSearch.LANGUAGE,
-            )
+        // the payload records the lambda's reified result type; a result that can never serve this
+        // context is rejected here, at compile, not on the first document. `Any`/`Comparable`-like
+        // declarations (untyped `when` branches) pass and are checked per result.
+        if (expectedReturnType != null) {
+            val declared = try {
+                Class.forName(data.returnTypeClassName, false, javaClass.classLoader)
+            } catch (_: ClassNotFoundException) {
+                null // a user type: cannot serve a score/filter context, fall through to the check below
+            }
+            val expected = expectedReturnType.javaObjectType
+            val compatible = declared != null && (expected.isAssignableFrom(declared) || declared.isAssignableFrom(expected))
+            if (!compatible) {
+                throw ScriptException(
+                    "chill script returns ${data.returnTypeClassName}, but this context needs ${expected.simpleName}",
+                    ClassCastException(),
+                    emptyList(),
+                    name ?: "<inline>",
+                    ChillOpenSearch.LANGUAGE,
+                )
+            }
         }
         val slotKinds = data.slots.map { it.kind }
         val scoreIndex = slotKinds.indexOf(ChillSlot.KIND_SCORE)
@@ -281,7 +291,7 @@ class ChillScriptEngine(val limits: ExecutionLimits = ExecutionLimits()) : Scrip
     ): FactoryType {
         val factory: Any = when (context) {
             ScoreScript.CONTEXT -> scoreFactory(
-                compileChill(name, code, Double::class) { result ->
+                compileChill(name, code, Number::class) { result ->
                     (result as? Number)?.toDouble() ?: wrongType(name, code, "a number", result)
                 },
             )

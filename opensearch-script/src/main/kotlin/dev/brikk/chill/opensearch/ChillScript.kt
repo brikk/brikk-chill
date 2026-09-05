@@ -6,7 +6,7 @@ import kotlinx.serialization.KSerializer
  * A ready-to-run chill script: the frozen source plus the encoded params for this execution.
  * Use as an inline script: `lang = "chill"`, `source`, `params`.
  */
-open class ChillScript<out R> internal constructor(
+open class ChillScript<out R> @PublishedApi internal constructor(
     val source: String,
     val params: Map<String, Any?>,
 ) {
@@ -20,7 +20,7 @@ open class ChillScript<out R> internal constructor(
  * way into a query is [withParams] - which also makes it the right shape to register as a stored
  * script (store the value-free source once, send params per query).
  */
-open class ChillScriptTemplate<P : Any, out R> internal constructor(
+open class ChillScriptTemplate<P : Any, out R> @PublishedApi internal constructor(
     val source: String,
     val paramsSerializer: KSerializer<P>,
 ) {
@@ -48,7 +48,7 @@ object ChillBound
  *    constructed instance holds `_source` order; bind from `sourceType` when order matters, or
  *    construct local instances from the same sorted view.
  */
-class ChillBoundScript<out R, out E : Function<R>> internal constructor(
+class ChillBoundScript<out R, out E : Function<R>> @PublishedApi internal constructor(
     source: String,
     params: Map<String, Any?>,
     val evaluate: E,
@@ -68,7 +68,7 @@ fun Number.asIndexScore(): Double = toDouble().toFloat().toString().toDouble()
  * (`(P, D, Double) -> R`); [withParams] fixes them and yields a ready [ChillBoundScript] whose
  * `evaluate` omits them; [stored] keeps the evaluator alongside a stored-script reference.
  */
-class ChillBoundTemplate<P : Any, out R, out E : Function<R>, out B : Function<R>> internal constructor(
+class ChillBoundTemplate<P : Any, out R, out E : Function<R>, out B : Function<R>> @PublishedApi internal constructor(
     source: String,
     paramsSerializer: KSerializer<P>,
     val evaluate: E,

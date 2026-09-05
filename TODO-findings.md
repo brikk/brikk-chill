@@ -168,16 +168,23 @@ Two were behaviour bugs, two were OpenSearch facts that needed to be stated and 
       `ChillBoundScript` and `DocValuesCodec`; integration test shows `_source` order
       `zeta|alpha|zeta|mid` vs node `alpha|mid|zeta`, and parity on the sorted view.
 
-### [ ] 9. `ChillScript<out R>` is phantom for `script()`
+### [x] 9. `ChillScript<out R>` is phantom for `script()`
 
-`freeze` always writes `Any::class` as the return type (`ChillOpenSearch.kt:159`), so the
-server's return-type check (`ChillScriptEngine.kt:173`) only fires for `boundScore`. A
-`script { "str" }` used as a score script fails per-document at execute time, not at compile.
+Was: `freeze` always recorded `Any` as the return type, so the node's check never fired for
+`script()`; a `String` result in a score query failed per document. The typed client extensions
+in design §5 did not exist.
 
-Design §5 lists `ScriptScoreQuery.Builder.chill(...)`, `FunctionScore.Builder.chill(...)`,
-`SearchRequest.Builder.chillScriptField(...)`; none exist. Typed versions
-(`ChillScript<Number>` for score, `ChillScript<Boolean>` for filter) would make `R` do real work
-at the call site.
+Done:
+- `script(...)` and `bound(...)` are `inline` with `reified R`; the payload records the actual
+  result class. The node checks it against the context at compile (score: any `Number`; filter:
+  `Boolean`; field: anything) and rejects with "returns X, but this context needs Y". A lambda
+  whose branches force `Any` still passes and is checked per result; Kotlin requires the explicit
+  `script<Any>` in that case and says so.
+- opensearch-java extensions typed by result: `ScriptScoreQuery.Builder.chill(ChillScript<Number>)`,
+  `ScriptScoreFunction.Builder.chill(ChillScript<Number>)`, `ScriptQuery.Builder.chill(ChillScript<Boolean>)`,
+  `SearchRequest.Builder.chillScriptField(name, ChillScript<*>)`, plus `ChillStoredScript` variants.
+  Passing a `Boolean` script to a score builder is now a compile error in the IDE. Integration
+  test builds a function_score with a chill filter, chill score function, and chill script field.
 
 ## Low
 
