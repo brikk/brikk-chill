@@ -65,6 +65,28 @@ val pluginZip = tasks.register<Zip>("pluginZip") {
 
 tasks.named("assemble") { dependsOn(pluginZip) }
 
+publishing.publications.withType<MavenPublication>().configureEach {
+    artifact(pluginZip) { classifier = "os-$opensearchVersion" }
+}
+
+val pluginTestRepository = layout.buildDirectory.dir("plugin-test-repository")
+publishing.repositories.maven {
+    name = "pluginTest"
+    url = uri(pluginTestRepository)
+}
+
+tasks.test {
+    dependsOn("publishMavenPublicationToPluginTestRepository")
+    inputs.file(pluginZip.flatMap { it.archiveFile })
+    inputs.dir(pluginTestRepository)
+    systemProperty("chill.plugin.zip", pluginZip.get().archiveFile.get().asFile.absolutePath)
+    systemProperty("chill.plugin.version", project.version.toString())
+    systemProperty("chill.opensearch.version", opensearchVersion)
+    systemProperty("chill.plugin.publication", pluginTestRepository.get().dir(
+        "${project.group.toString().replace('.', '/')}/chill-opensearch-plugin/${project.version}",
+    ).asFile.absolutePath)
+}
+
 // ---- integration tests: real OpenSearch (Testcontainers) with the plugin installed --------------
 
 val integrationTest: SourceSet by sourceSets.creating {

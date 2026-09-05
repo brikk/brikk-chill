@@ -40,6 +40,13 @@ jobs:
       - name: Build and test
         run: ./gradlew build --console=plain
 
+      - name: Retain installable OpenSearch plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: chill-opensearch-plugin
+          path: opensearch-plugin/build/distributions/*.zip
+          if-no-files-found: error
+
       - name: Publish snapshot to Central snapshots
         env:
           KOTLIN_TOOLCHAIN_MAVENCENTRAL_USERNAME: ${{ secrets.KOTLIN_TOOLCHAIN_MAVENCENTRAL_USERNAME || secrets.KOTLIN_TOOLCHAIN_MAVEN_CENTRAL_USERNAME }}

@@ -64,6 +64,13 @@ jobs:
         run: |
           ./gradlew -Pversion="${{ steps.ver.outputs.version }}" build publishAllPublicationsToStagingRepository --console=plain
 
+      - name: Retain installable OpenSearch plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: chill-opensearch-plugin-${{ steps.ver.outputs.version }}
+          path: opensearch-plugin/build/distributions/*.zip
+          if-no-files-found: error
+
       - name: Upload deployment bundle to Central Portal (AUTOMATIC, no wait)
         env:
           CENTRAL_USERNAME: ${{ secrets.KOTLIN_TOOLCHAIN_MAVENCENTRAL_USERNAME || secrets.KOTLIN_TOOLCHAIN_MAVEN_CENTRAL_USERNAME }}
