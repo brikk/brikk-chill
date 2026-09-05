@@ -201,7 +201,7 @@ object ClassAllowanceDetector {
                 }
 
                 override fun visitTypeAnnotation(typeRef: Int, typePath: TypePath?, desc: String?, visible: Boolean): AnnotationVisitor {
-                    collect.requestsFromDescSig(desc, typePath?.toString())
+                    collect.requestsFromDescSig(desc, null)
                     return AnnotationAllowanceScanner(collect)
                 }
             }
@@ -213,7 +213,7 @@ object ClassAllowanceDetector {
         }
 
         override fun visitTypeAnnotation(typeRef: Int, typePath: TypePath?, desc: String?, visible: Boolean): AnnotationVisitor {
-            collect.requestsFromDescSig(desc, typePath?.toString())
+            collect.requestsFromDescSig(desc, null)
             return AnnotationAllowanceScanner(collect)
         }
     }
@@ -246,17 +246,17 @@ object ClassAllowanceDetector {
         }
 
         override fun visitTypeAnnotation(typeRef: Int, typePath: TypePath?, desc: String?, visible: Boolean): AnnotationVisitor {
-            collect.requestsFromDescSig(desc, typePath?.toString())
+            collect.requestsFromDescSig(desc, null)
             return AnnotationAllowanceScanner(collect)
         }
 
         override fun visitTryCatchAnnotation(typeRef: Int, typePath: TypePath?, desc: String?, visible: Boolean): AnnotationVisitor {
-            collect.requestsFromDescSig(desc, typePath?.toString())
+            collect.requestsFromDescSig(desc, null)
             return AnnotationAllowanceScanner(collect)
         }
 
         override fun visitInsnAnnotation(typeRef: Int, typePath: TypePath?, desc: String?, visible: Boolean): AnnotationVisitor {
-            collect.requestsFromDescSig(desc, typePath?.toString())
+            collect.requestsFromDescSig(desc, null)
             return AnnotationAllowanceScanner(collect)
         }
 
@@ -274,7 +274,7 @@ object ClassAllowanceDetector {
         }
 
         override fun visitLocalVariableAnnotation(typeRef: Int, typePath: TypePath?, start: Array<out Label>?, end: Array<out Label>?, index: IntArray?, desc: String?, visible: Boolean): AnnotationVisitor {
-            collect.requestsFromDescSig(desc, typePath?.toString())
+            collect.requestsFromDescSig(desc, null)
             return AnnotationAllowanceScanner(collect)
         }
 

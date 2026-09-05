@@ -4,6 +4,11 @@ import dev.brikk.chill.quarantine.fixtures.IndyLambdaOps
 import dev.brikk.chill.quarantine.fixtures.IndyLambdaViolationOps
 import dev.brikk.chill.quarantine.fixtures.SafeOps
 import dev.brikk.chill.quarantine.fixtures.UnsafeOps
+import dev.brikk.chill.quarantine.fixtures.TypeAnnotatedOps
+import dev.brikk.chill.quarantine.fixtures.TypeMark
+import dev.brikk.chill.policy.AccessTypes
+import dev.brikk.chill.policy.PolicyAllowance
+import dev.brikk.chill.policy.toPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -20,6 +25,20 @@ class QuarantineTests {
     fun safeClassPassesBootstrapPolicy() {
         val result = quarantine.verifyClassAgainstPolicies(listOf(classBytesOf(SafeOps::class.java)))
         assertTrue(result.violations.isEmpty()) { "expected no violations, got:\n${result.violations.joinToString("\n")}" }
+    }
+
+    @Test
+    fun typeUseAnnotationsAreScannedAsReferencesNotSignatures() {
+        val bytes = listOf(classBytesOf(TypeAnnotatedOps::class.java))
+        val denied = quarantine.verifyClassAgainstPolicies(bytes)
+        assertTrue(denied.violations.any { "TypeMark" in it }) { denied.violations.toString() }
+
+        val annotationPolicy = listOf(
+            PolicyAllowance.ClassLevel.ClassAccess(TypeMark::class.java.name, setOf(AccessTypes.ref_Class)),
+        ).toPolicy().toSet()
+        val allowed = quarantine.verifyClassAgainstPolicies(bytes, annotationPolicy)
+        assertTrue(allowed.violations.isEmpty()) { allowed.violations.toString() }
+        assertEquals(listOf("one", "two"), TypeAnnotatedOps().copy(listOf("one", "two")))
     }
 
     @Test
